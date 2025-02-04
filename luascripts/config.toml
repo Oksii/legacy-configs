@@ -8,9 +8,12 @@
 ########################
 
 # Toggle between presets.
-# docker_config = true will use [docker_configuration] 
-# and environment variables provided by docker on runtime
 # docker_config = false will use [configuration] table
+
+# docker_config = true will use [docker_configuration] 
+# and environment variables provided by docker on runtime.
+# Automatically set via docker container, no edit required.
+
 docker_config = false
 
 # Regular configuration settings (used when docker_config = false)
@@ -21,7 +24,7 @@ api_url_submit = "https://api.etl.lol/api/v2/stats/etl/matches/stats/submit"
 log_filepath = "/legacy/homepath/legacy/stats/game_stats.log"
 json_filepath = "/legacy/homepath/legacy/stats/"
 logging_enabled = false
-collect_obituaries = false
+collect_obituaries = true
 collect_messages = false
 collect_damageStats = false
 collect_objstats = true

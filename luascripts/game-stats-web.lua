@@ -89,61 +89,260 @@
 
         15-01-2025: v1.0.11 -- Oksii
             - Fixed invalid gentity field error by properly accessing hitRegions through indexed parameters
+
+        03-02-2025: v1.1.0 -- Oksii
+            - Added objective tracking
+            - Added player shove tracking
+            - Exported configuration to config.toml
+            - Added default config and docker preset to config.toml
+            - Improved stat collection, early returns on disables
+            - Safety guard for GetAllHitRegions to prevent errors on fall damage
+            - Safety guard for SaveStats to prevent multiple calls 
+            - Improved logging
+            - Cleaned up redundant function from obj-track.lua merger 
+            - Moved map config and server relevant cvars to initializeServerInfo to free up et_initgame
+            - Cleaned up et_runframe 
+            - Added config validation
+            - Added helper to normalize strings
+            - Added helper to strip colors for et_Print 
 ]]--
 
 local modname = "game-stats-web-api"
-local version = "1.0.11"
+local version = "1.1.0"
 
 -- Required libraries
 local json = require("dkjson")
+local toml = require("toml")
 
--- Configuration
+-- Default configuration
 local configuration = {
-    api_token            = "%CONF_STATS_API_TOKEN%",
-    api_url_matchid      = "%CONF_STATS_API_URL_MATCHID%",
-    api_url_submit       = "%CONF_STATS_API_URL_SUBMIT%",
-    log_filepath         = "%CONF_STATS_API_PATH%/game_stats.log",
-    json_filepath        = "%CONF_STATS_API_PATH%/",
-    logging_enabled      = %CONF_STATS_API_LOG%,            -- Toggle logging on/off
-    collect_obituaries   = %CONF_STATS_API_OBITUARIES%,
-    collect_messages     = %CONF_STATS_API_MESSAGELOG%,
-    collect_damageStats  = %CONF_STATS_API_DAMAGESTAT%,
-    dump_stats_data      = %CONF_STATS_API_DUMPJSON%,
+    api_token = "api_token",
+    api_url_matchid = "api_url_matchid",
+    api_url_submit = "api_url_submit",
+    log_filepath = "log_filepath",
+    json_filepath = "json_filepath",
+    logging_enabled = false,
+    collect_damageStats = false,
+    collect_messages = false,
+    collect_objstats = false,
+    collect_obituaries = false,
+    collect_shovestats = false,
+    dump_stats_data = false
 }
+
+-- config.toml
+local function get_config_path()
+    local fs_basepath = et.trap_Cvar_Get("fs_basepath")
+    local fs_game = et.trap_Cvar_Get("fs_game")
+    
+    if not fs_basepath or not fs_game then
+        et.G_Print(string.format("%s: Failed to get game paths\n", modname))
+        return nil
+    end
+    
+    return string.format("%s/%s/luascripts/config.toml", fs_basepath, fs_game)
+end
+
+local function load_config(filepath)
+    if not filepath then
+        et.G_Print(string.format("%s: Invalid config file path\n", modname))
+        return nil
+    end
+
+    -- Check if file exists and can be opened
+    local exists = io.open(filepath)
+    if not exists then
+        et.G_Print(string.format("%s: Config file not found: %s\n", modname, filepath))
+        return nil
+    end
+    exists:close()
+    
+    -- Read file
+    local file, err = io.open(filepath, "r")
+    if not file then
+        et.G_Print(string.format("%s: Failed to open config file: %s\n", modname, err))
+        return nil
+    end
+    
+    local content = file:read("*all")
+    file:close()
+    
+    if not content or content == "" then
+        et.G_Print(string.format("%s: Config file is empty\n", modname))
+        return nil
+    end
+    
+    -- Parse TOML
+    local success, result = pcall(toml.parse, content)
+    if not success then
+        local error_msg = result
+        local line_number = string.match(result, ":(%d+):")
+        if line_number then
+            error_msg = string.format("Parse error near line %s: %s", line_number, result)
+        end
+        et.G_Print(string.format("%s: %s\n", modname, error_msg))
+        return nil
+    end
+    
+    return result
+end
+
+local function normalize_key(key)
+    if type(key) ~= "string" then
+        return tostring(key):lower()
+    end
+    return string.lower(key)
+end
+
+function isEmpty(str)
+	if str == nil or str == '' then
+		return 0
+	end
+	return str
+end
+
+local function table_count(t)
+    local count = 0
+    for _ in pairs(t) do
+        count = count + 1
+    end
+    return count
+end
+
+local function process_config(config)
+    local normalized = {}
+
+    -- Ensure we have a maps table
+    if not config.maps then
+        return {}
+    end
+    
+    for map_name, map_data in pairs(config.maps) do
+        normalized[normalize_key(map_name)] = {
+            objectives = {},
+            buildables = {}
+        }
+        
+        -- Process objectives
+        if map_data.objectives then
+            for obj_name, obj_data in pairs(map_data.objectives) do
+                table.insert(normalized[normalize_key(map_name)].objectives, {
+                    name = normalize_key(obj_name),
+                    steal_pattern = normalize_key(obj_data.steal_pattern),
+                    secured_pattern = normalize_key(obj_data.secured_pattern),
+                    return_pattern = normalize_key(obj_data.return_pattern)
+                })
+            end
+        end
+        
+        -- Process buildables
+        if map_data.buildables then
+            for build_name, build_data in pairs(map_data.buildables) do
+                if build_data.enabled ~= nil then
+                    normalized[normalize_key(map_name)].buildables[normalize_key(build_name)] = {
+                        enabled = build_data.enabled
+                    }
+                else
+                    normalized[normalize_key(map_name)].buildables[normalize_key(build_name)] = {
+                        construct_pattern = normalize_key(build_data.construct_pattern or ""),
+                        destruct_pattern = normalize_key(build_data.destruct_pattern or ""),
+                        plant_pattern = normalize_key(build_data.plant_pattern or "")
+                    }
+                end
+            end
+        end
+    end
+    return normalized
+end
+
+local map_configs = {}
+local common_buildables = {}
+
+-- init config
+do
+    local config_path = get_config_path()
+    local config = load_config(config_path)
+    
+    if not config then
+        et.G_Print(string.format("%s: Failed to load configuration file: %s\n", modname, config_path))
+        return
+    end
+
+    -- Check which configuration to use based on docker_config flag
+    local use_docker = config.docker_config or false
+    local config_section = use_docker and config.docker_configuration or config.configuration
+    
+    if not config_section then
+        et.G_Print(string.format("%s: No configuration section found\n", modname))
+        return
+    end
+
+    -- Update configuration with values from TOML
+    for key, value in pairs(config_section) do
+        configuration[key] = value
+    end
+
+    -- Process map configs
+    if config.maps then
+        map_configs = process_config(config)
+        if table_count(map_configs) == 0 then
+            et.G_Print(string.format("%s: No valid map configurations found\n", modname))
+        end
+    else
+        et.G_Print(string.format("%s: No maps section found in config\n", modname))
+    end
+    
+    -- Process common buildables
+    if config.common_buildables then
+        common_buildables = config.common_buildables
+        if table_count(common_buildables) == 0 then
+            et.G_Print(string.format("%s: No common buildables found\n", modname))
+        end
+    else
+        et.G_Print(string.format("%s: No common buildables section found\n", modname))
+    end
+end
 
 -- Server info
 local server_ip
 local server_port
 
 -- local variables
-local LOG_FORMAT         = "[%s UTC] %s\n" 
-local maxClients         = 20
-local intermission       = false
-local stats              = {}
-local messages           = {}
-local obituaries         = {}
-local damageStats        = {}
-local hitRegionsData     = {}
-local nextStoreTime      = 0
-local storeTimeInterval  = 5000 -- how often we store players stats
-local saveStatsDelay     = 3000 -- wait for intermission screen before sending stats
-local scheduledSaveTime  = 0
+local maxClients           = 20
+local mapname              = ""
+
+local stats                = {}
+local messages             = {}
+local obituaries           = {}
+local damageStats          = {}
+local hitRegionsStats      = {}
+local objstats             = {}
+local objective_carriers   = { players = {}, ids = {} }
+local objective_states     = {}
+local recent_announcements = {}
+local announcements_buffer = 5
+local repair_buffer        = 2000
+
+local intermission         = false
+local saveStatsState       = { inProgress = false } -- safety check to prevent SaveStats looping
+local nextStoreTime        = 0
+local scheduledSaveTime    = 0
+local storeTimeInterval    = 5000 -- how often we store players stats
+local saveStatsDelay       = 3000 -- wait for intermission screen before sending stats
 
 -- local constants
-local CON_CONNECTED      = 2
-local WS_KNIFE           = 0
-local WS_MAX             = 28
-local PERS_SCORE         = 0
+local CON_CONNECTED        = 2
+local WS_KNIFE             = 0
+local WS_MAX               = 28
+local PERS_SCORE           = 0
 
 -- Constants for hit regions
-local HR_HEAD            = 0
-local HR_ARMS            = 1
-local HR_BODY            = 2
-local HR_LEGS            = 3
-local HR_NONE            = -1
+local HR_HEAD              = 0
+local HR_ARMS              = 1
+local HR_BODY              = 2
+local HR_LEGS              = 3
+local HR_NONE              = -1
 local HR_TYPES = {HR_HEAD, HR_ARMS, HR_BODY, HR_LEGS}
-
--- Lookup table for hit region names
 local HR_NAMES = {
     [HR_HEAD] = "HR_HEAD",
     [HR_ARMS] = "HR_ARMS",
@@ -173,7 +372,9 @@ local log = configuration.logging_enabled and function(message)
         end
         
         local write_success, write_err = pcall(function()
-            file:write(string.format(LOG_FORMAT, os.date("%Y-%m-%d %H:%M:%S"), message))
+            local time = et.trap_Milliseconds()
+            local ms = time % 1000
+            file:write(string.format("[%s.%03d] %s\n", os.date("%Y-%m-%d %H:%M:%S"), ms, message))
         end)
         
         file:close()
@@ -188,6 +389,7 @@ local log = configuration.logging_enabled and function(message)
     end
 end or function() end  -- No-op if logging disabled
 
+-- Utilities
 function ConvertTimelimit(timelimit)
 	local msec    = math.floor(tonumber(timelimit) * 60000)
 	local seconds = math.floor(msec / 1000)
@@ -197,13 +399,6 @@ function ConvertTimelimit(timelimit)
 	seconds       = math.floor(seconds - (tens * 10))
 	
 	return string.format("%i:%i%i", mins, tens, seconds)
-end
-
-function isEmpty(str)
-	if str == nil or str == '' then
-		return 0
-	end
-	return str
 end
 
 -- Fetch and add GUID to cache
@@ -236,6 +431,543 @@ function et_ClientDisconnect(clientNum)
     clientGuids[clientNum] = nil
 end
 
+-- Objective tracking utilities
+local function match_any_pattern(text, patterns)
+    if type(patterns) ~= "table" then 
+        if type(patterns) == "string" then
+            return string.find(normalize_key(text), normalize_key(patterns))
+        end
+        return false 
+    end
+    
+    local normalized_text = normalize_key(text)
+    for _, pattern in ipairs(patterns) do
+        if string.find(normalized_text, normalize_key(pattern)) then
+            return true
+        end
+    end
+    return false
+end
+
+local function contains(tbl, element)
+    for _, value in pairs(tbl) do
+        if value == element then
+            return true
+        end
+    end
+    return false
+end
+
+local function strip_colors(text)
+    if not text then return "" end
+    return string.gsub(text, "%^%d", "")
+end
+
+local function resetGameState()
+    -- Clear stats tables
+    damageStats = {}
+    obituaries = {}
+    objstats = {}
+    messages = {}
+
+    -- Clear client tracking
+    clientGuids = {}
+    
+    -- Reset objective tracking
+    objective_carriers = { players = {}, ids = {} }
+    objective_states = {}
+    recent_announcements = {}
+
+    -- Reset timing states
+    saveStatsState.inProgress = false
+    scheduledSaveTime = 0
+end
+
+local function get_base_map_name(full_mapname)
+    full_mapname = string.lower(full_mapname)
+    
+    -- Strip common prefixes
+    local prefixes = {"etl_", "et_", "mp_", "sw_"}
+    for _, prefix in ipairs(prefixes) do
+        if string.sub(full_mapname, 1, string.len(prefix)) == prefix then
+            full_mapname = string.sub(full_mapname, string.len(prefix) + 1)
+            break
+        end
+    end
+    
+    -- Strip common suffixes
+    local suffixes = {"_b%d+", "_v%d+", "_final", "_te", "_sw"}
+    for _, suffix in ipairs(suffixes) do
+        full_mapname = string.gsub(full_mapname, suffix .. "$", "")
+    end
+    
+    return full_mapname
+end
+
+-- Objective state management
+local function add_recent_announcement(text, timestamp)
+    table.insert(recent_announcements, 1, {
+        text = text,
+        timestamp = timestamp
+    })
+    
+    if #recent_announcements > announcements_buffer then
+        table.remove(recent_announcements)
+    end
+end
+
+local function record_obj_stat(guid, event_type, objective, timestamp, killer_info)
+    if not guid then
+        log("Missing GUID in record_obj_stat")
+        return
+    end
+
+    if not event_type then
+        log("Missing event_type in record_obj_stat")
+        return
+    end
+
+    -- Initialize objstat entry if needed
+    if not objstats[guid] then
+        objstats[guid] = {
+            obj_planted = {},
+            obj_destroyed = {},
+            obj_taken = {},
+            obj_returned = {},
+            obj_secured = {},
+            obj_repaired = {},
+            obj_defused = {},
+            obj_carrierkilled = {},
+            shoves_given = {},
+            shoves_received = {}
+        }
+    end
+    
+    -- Handle carrier killed events differently
+    if event_type == "obj_carrierkilled" and killer_info then
+        objstats[guid][event_type][timestamp] = {
+            victim = killer_info.guid,
+            weapon = killer_info.weapon,
+            objective = killer_info.objective
+        }
+    else
+        objstats[guid][event_type][timestamp] = objective or "unknown"
+    end
+    
+    log(string.format("Recorded objective event - GUID: %s, Event: %s, Objective: %s", 
+        guid,
+        event_type,
+        objective or "unknown"
+    ))
+end
+
+local function update_objective_state(obj_name, action, guid, normalized_text)
+    objective_states[obj_name] = objective_states[obj_name] or {
+        last_popup = "",
+        last_announce = "",
+        last_action = "",
+        timestamp = 0
+    }
+    
+    local timestamp = trap_Milliseconds()
+    objective_states[obj_name].timestamp = timestamp
+    objective_states[obj_name].last_action = action
+    
+    if normalized_text then
+        objective_states[obj_name].last_announce = normalized_text
+    end
+    
+    if guid then
+        objective_states[obj_name].planter_guid = (action == "planted") and guid or nil
+    end
+
+    return timestamp
+end
+
+local function handle_destroyer_attribution(obj_name)
+    local destroyer_guid, valid_destroyer_found = nil, false
+
+    -- Check for planter first
+    if objective_states[obj_name] and 
+       objective_states[obj_name].planter_guid then
+        destroyer_guid = objective_states[obj_name].planter_guid
+        valid_destroyer_found = true
+        log(string.format("Destroy: %s attributed to planter: %s", obj_name, destroyer_guid))
+
+    -- Try to attribute to covert ops
+    else
+        local covert_ops = get_active_covert_ops()
+        if #covert_ops == 1 then
+            destroyer_guid = clientGuids[covert_ops[1]]
+            valid_destroyer_found = true
+            log(string.format("%s destroyed by covert: %s", obj_name, destroyer_guid))
+        elseif #covert_ops > 1 then
+            log(string.format("%s: multiple coverts active", obj_name))
+        end
+    end
+
+    return destroyer_guid, valid_destroyer_found
+end
+
+local function handle_buildable_destruction(obj_name, normalized_text)       
+    local destroyer_guid, valid_destroyer_found = handle_destroyer_attribution(obj_name)
+    
+    if valid_destroyer_found and destroyer_guid then
+        record_obj_stat(destroyer_guid, "obj_destroyed", obj_name, trap_Milliseconds())
+        log(string.format("Destruction: %s by %s", obj_name, destroyer_guid))
+    end
+
+    update_objective_state(obj_name, "destroyed", nil, normalized_text)
+end
+
+-- Get list of covies
+local function get_active_covert_ops()
+    local COVERT_OPS = 4
+    local AXIS = 1
+    local ALLIES = 2
+    local covert_ops_clients = {}
+
+    for clientNum = 0, maxClients - 1 do
+        if clientGuids[clientNum] then  -- Only check connected clients
+            local sessionTeam = tonumber(et.gentity_get(clientNum, "sess.sessionTeam"))
+            local playerType = tonumber(et.gentity_get(clientNum, "sess.playerType"))
+
+            if (sessionTeam == AXIS or sessionTeam == ALLIES) and playerType == COVERT_OPS then
+                table.insert(covert_ops_clients, clientNum)
+            end
+        end
+    end    
+    return covert_ops_clients
+end
+
+local function check_recent_construction(obj_name, patterns, obj_config, current_time)
+    -- Validate buildable configuration
+    if not obj_config then
+        return false
+    end
+
+    -- Check both current state and recent announcements
+    local matched = false
+
+    -- First check current state
+    if objective_states[obj_name] and 
+       objective_states[obj_name].last_announce and
+       (current_time - objective_states[obj_name].timestamp) < repair_buffer then
+
+        local last_announce = objective_states[obj_name].last_announce
+
+        -- Handle map-specific buildables
+        if type(obj_config) == "table" and obj_config.construct_pattern then
+            matched = string.match(normalize_key(last_announce), normalize_key(obj_config.construct_pattern)) ~= nil
+            log(string.format("Map-specific pattern check for %s: '%s' against '%s' = %s", 
+                obj_name,
+                normalize_key(last_announce),
+                normalize_key(obj_config.construct_pattern),
+                tostring(matched)))
+
+        -- Handle common buildables
+        elseif type(obj_config) == "table" and obj_config.enabled then
+            if type(patterns) == "table" and patterns.construct then
+                matched = match_any_pattern(last_announce, patterns.construct)
+            end
+        end
+    end
+
+    -- If no match in current state, check recent announcements
+    if not matched then
+        for _, announcement in ipairs(recent_announcements) do
+            if (current_time - announcement.timestamp) < repair_buffer then
+                -- Handle common buildables
+                if type(obj_config) == "table" and obj_config.enabled then
+                    if type(patterns) == "table" and patterns.construct then
+                        matched = match_any_pattern(announcement.text, patterns.construct)
+                    end
+
+                -- Handle map-specific buildables
+                elseif type(obj_config) == "table" and obj_config.construct_pattern then
+                    matched = string.find(normalize_key(announcement.text), normalize_key(obj_config.construct_pattern)) ~= nil
+                end
+
+                if matched then
+                    update_objective_state(obj_name, "constructed", nil, announcement.text)
+                    break
+                end
+            end
+        end
+    end
+
+    return matched
+end
+
+-- clear previous objective entries
+local function clear_previous_objective_entries(guid, objective_name, timestamp)
+    if not objstats[guid] then return end
+    
+    local new_taken = {}
+    for entry_timestamp, obj in pairs(objstats[guid].obj_taken or {}) do
+        if obj ~= objective_name or entry_timestamp >= timestamp then
+            new_taken[entry_timestamp] = obj
+        end
+    end
+    
+    if objstats[guid].obj_taken then
+        objstats[guid].obj_taken = new_taken
+    end
+end
+
+function et_Print(text)
+    local map_config = map_configs[mapname]
+    if not map_config then return end
+
+    -- Handle Objective_Destroyed messages
+    if string.find(text, "Objective_Destroyed:") then
+        local id, obj_text = text:match("^Objective_Destroyed: (%d+) (.+)$")
+        if id and obj_text then
+            local normalized_text = normalize_key(obj_text:match("^%s*(.-)%s*$"))
+
+            if map_config.buildables then
+                for obj_name, obj_config in pairs(map_config.buildables) do
+                    if type(obj_config) == "table" and 
+                       obj_config.destruct_pattern and 
+                       obj_config.destruct_pattern ~= "" and 
+                       string.find(normalized_text, normalize_key(obj_config.destruct_pattern)) then
+                        handle_buildable_destruction(obj_name, normalized_text)
+                        break
+                    end
+                end
+            end
+        end
+    end
+
+    -- Handle announcements
+    if string.find(text, "legacy announce:") then
+        local clean_text = strip_colors(text:match("legacy announce: \"(.+)\""))
+        local normalized_text = normalize_key(clean_text)
+        local current_time = trap_Milliseconds()
+
+        add_recent_announcement(normalized_text, current_time)
+
+        -- Process common buildables
+        for obj_name, common_config in pairs(common_buildables) do
+            if map_config.buildables[obj_name] and 
+               type(map_config.buildables[obj_name]) == "table" and 
+               map_config.buildables[obj_name].enabled then
+
+                if match_any_pattern(normalized_text, common_config.patterns.construct) then
+                    update_objective_state(obj_name, "constructed", nil, normalized_text)
+                    log(string.format("Construction: %s", obj_name))
+                elseif match_any_pattern(normalized_text, common_config.patterns.destruct) then
+                    handle_buildable_destruction(obj_name, normalized_text)
+                end
+            end
+        end
+
+        -- Process map-specific buildables
+        if map_config.buildables then
+            for obj_name, obj_config in pairs(map_config.buildables) do
+                if type(obj_config) == "table" then
+                    if obj_config.construct_pattern and 
+                       obj_config.construct_pattern ~= "" and
+                       string.find(normalized_text, normalize_key(obj_config.construct_pattern)) then
+                        update_objective_state(obj_name, "constructed", nil, normalized_text)
+                        log(string.format("Construction: %s", obj_name))
+                    elseif obj_config.destruct_pattern and 
+                           obj_config.destruct_pattern ~= "" and
+                           string.find(normalized_text, normalize_key(obj_config.destruct_pattern)) then
+                        if not (objective_states[obj_name] and 
+                               objective_states[obj_name].last_action == "destroyed" and
+                               (current_time - objective_states[obj_name].timestamp) < 1000) then
+                            handle_buildable_destruction(obj_name, normalized_text)
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- Handle objectives and popups
+    if string.find(text, "legacy popup:") then
+        local normalized_text = normalize_key(strip_colors(text))
+
+        if map_config.objectives then
+            for _, obj in pairs(map_config.objectives) do
+                if string.find(normalized_text, normalize_key(obj.steal_pattern)) then
+                    objective_states[obj.name].last_popup = normalized_text
+                    objective_states[obj.name].timestamp = trap_Milliseconds()
+                    break
+                elseif string.find(normalized_text, normalize_key(obj.return_pattern)) then
+                    local returner_guid = objective_states[obj.name].carrier_id and 
+                                        clientGuids[objective_states[obj.name].carrier_id] or "WORLD"
+
+                    record_obj_stat(returner_guid, "obj_returned", obj.name, trap_Milliseconds())
+                    log(string.format("Return: %s by %s", obj.name, returner_guid))
+
+                    -- Clear carrier state
+                    if objective_states[obj.name].carrier_id then
+                        objective_carriers.players[objective_states[obj.name].carrier_id] = nil
+                        objective_states[obj.name].carrier_id = nil
+                    end
+                end
+            end
+        end
+    end
+
+    -- Handle dynamite events
+    local function handle_dynamite_event(event_type, text, action_name)
+        local id, event_text = text:match("^" .. event_type .. ": (%d+) (.+)$")
+        if id and event_text then
+            local guid = clientGuids[tonumber(id)]
+            local normalized_text = normalize_key(event_text:match("^%s*(.-)%s*$"))
+
+            -- Check common buildables first
+            for obj_name, common_config in pairs(common_buildables) do
+                if map_config.buildables[obj_name] and 
+                   match_any_pattern(normalized_text, common_config.patterns.plant) then
+                    record_obj_stat(guid, "obj_" .. action_name, obj_name, trap_Milliseconds())
+                    log(string.format("%s: %s by %s", action_name, obj_name, guid))
+                    update_objective_state(obj_name, action_name, guid)
+                    return
+                end
+            end
+
+            -- Then check map-specific buildables
+            for obj_name, obj_config in pairs(map_config.buildables) do
+                if type(obj_config) ~= "boolean" and 
+                   obj_config.plant_pattern and 
+                   obj_config.plant_pattern ~= "" and
+                   string.find(normalized_text, normalize_key(obj_config.plant_pattern)) then
+                    record_obj_stat(guid, "obj_" .. action_name, obj_name, trap_Milliseconds())
+                    log(string.format("%s: %s by %s", action_name, obj_name, guid))
+                    update_objective_state(obj_name, action_name, guid)
+                    break
+                end
+            end
+        end
+    end
+
+    if string.find(text, "Dynamite_Plant:") then
+        handle_dynamite_event("Dynamite_Plant", text, "planted")
+    elseif string.find(text, "Dynamite_Diffuse:") then
+        handle_dynamite_event("Dynamite_Diffuse", text, "defused")
+    end
+
+    -- Handle repairs
+    if string.find(text, "Repair:") then
+        local id = string.match(text, "^Repair: (%d+)")
+        if id then
+            local guid = clientGuids[tonumber(id)]
+            local objective_name = "Unknown Repair"
+            local current_time = trap_Milliseconds()
+
+            -- Check common buildables first
+            for obj_name, common_config in pairs(common_buildables) do
+                if map_config.buildables[obj_name] and 
+                   check_recent_construction(obj_name, common_config.patterns, map_config.buildables[obj_name], current_time) then
+                    objective_name = obj_name
+                    break
+                end
+            end
+
+            -- Only check map-specific if no common match
+            if objective_name == "Unknown Repair" then
+                for obj_name, obj_config in pairs(map_config.buildables) do
+                    if type(obj_config) == "table" and 
+                       obj_config.construct_pattern and 
+                       obj_config.construct_pattern ~= "" and
+                       check_recent_construction(obj_name, nil, obj_config, current_time) then
+                        objective_name = obj_name
+                        break
+                    end
+                end
+            end
+            record_obj_stat(guid, "obj_repaired", objective_name, current_time)
+        end
+    end
+
+    -- Handle flag/item pickups
+    if string.find(text, "Item:") and 
+       (string.find(text, "team_CTF_redflag") or string.find(text, "team_CTF_blueflag")) then
+        local id = tonumber(string.match(text, "Item: (%d+)"))
+        if id then
+            for _, obj in pairs(map_config.objectives) do
+                if objective_states[obj.name] and 
+                   objective_states[obj.name].last_popup and 
+                   (trap_Milliseconds() - objective_states[obj.name].timestamp) < 1000 then
+                    local normalized_popup = normalize_key(strip_colors(objective_states[obj.name].last_popup))
+
+                    if string.find(normalized_popup, normalize_key(obj.steal_pattern)) then
+                        local guid = clientGuids[id]
+                        record_obj_stat(guid, "obj_taken", obj.name, trap_Milliseconds())
+                        log(string.format("Steal: %s by %s", obj.name, guid))
+
+                        objective_carriers.players[id] = obj.name
+                        objective_states[obj.name].carrier_id = id
+                        if not contains(objective_carriers.ids, id) then
+                            table.insert(objective_carriers.ids, id)
+                        end
+                        break
+                    end
+                end
+            end
+        end
+    end
+
+    -- Handle objective securing
+    if string.find(text, "secure") or string.find(text, "escap") or 
+       string.find(text, "transmit") or string.find(text, "capture") or 
+       string.find(text, "transport") then
+        local normalized_text = normalize_key(strip_colors(text))
+        local first_sentence = normalized_text:match("[^.]+")
+
+        if first_sentence and map_config.objectives then
+            for _, obj in ipairs(map_config.objectives) do
+                if obj.secured_pattern and string.find(first_sentence, obj.secured_pattern) then
+                    for carrier_id, carried_obj in pairs(objective_carriers.players) do
+                        if carried_obj == obj.name then
+                            local guid = clientGuids[carrier_id]
+                            local timestamp = trap_Milliseconds()
+
+                            record_obj_stat(guid, "obj_secured", obj.name, timestamp)
+                            log(string.format("Secure: %s by %s", obj.name, guid))
+
+                            -- Clear carrier states
+                            objective_carriers.players[carrier_id] = nil
+                            for i, v in ipairs(objective_carriers.ids) do
+                                if v == carrier_id then
+                                    table.remove(objective_carriers.ids, i)
+                                    break
+                                end
+                            end
+
+                            update_objective_state(obj.name, "secured")
+                            break
+                        end
+                    end
+                    break
+                end
+            end
+        end
+    end
+
+    -- Handle shoves
+    if configuration.collect_shovestats then
+        local shover, target = string.match(text, "^Shove: (%d+) (%d+)")
+        if shover and target then
+            local shover_guid = clientGuids[tonumber(shover)]
+            local target_guid = clientGuids[tonumber(target)]
+            local timestamp = trap_Milliseconds()
+            
+            if shover_guid and target_guid then
+                record_obj_stat(shover_guid, "shoves_given", target_guid, timestamp)
+                record_obj_stat(target_guid, "shoves_received", shover_guid, timestamp)
+            else
+                log(string.format("Failed to get GUIDs for shove event - Shover: %s, Target: %s", shover, target))
+            end
+        end
+    end
+end
+
+-- Sanitize
 local SANITIZE_PATTERNS = {
     ['"'] = '\\"',          -- Escape double quotes for JSON
     ["'"] = "\\'",          -- Escape single quotes
@@ -382,6 +1114,7 @@ local function getPublicIP()
 end
 
 local function initializeServerInfo()
+    -- Initialize server network info
     local net_ip = et.trap_Cvar_Get("net_ip")
     local net_port = et.trap_Cvar_Get("net_port")
     
@@ -391,9 +1124,92 @@ local function initializeServerInfo()
     else
         server_ip = net_ip
     end
-    
     server_port = net_port
-    log(string.format("Initialized server info - IP: %s, Port: %s", server_ip, server_port))
+
+    -- Initialize map info
+    local full_mapname = et.trap_Cvar_Get("mapname")
+    local base_mapname = get_base_map_name(full_mapname)
+    local round = tonumber(et.trap_Cvar_Get("g_currentRound")) == 0 and 1 or 2
+    local et_version = et.trap_Cvar_Get("mod_version")
+    
+    -- Find matching map configuration
+    local found_config = false
+    for config_name, config in pairs(map_configs) do
+        local base_config_name = get_base_map_name(config_name)
+        
+        if base_mapname == base_config_name then
+            mapname = config_name  -- Use the config's canonical name
+            found_config = true
+            break
+        end
+    end
+
+    -- Initialize objective states if we have a valid map config
+    local map_config = map_configs[mapname]
+    if map_config then
+        if map_config.objectives then
+            for _, obj in ipairs(map_config.objectives) do
+                objective_states[obj.name] = {
+                    last_popup = "",
+                    last_announce = "",
+                    carrier_id = nil,
+                    last_action = "",
+                    timestamp = 0,
+                    planter_guid = nil
+                }
+            end
+        end
+        
+        if map_config.buildables then
+            for obj_name, obj_config in pairs(map_config.buildables) do
+                objective_states[obj_name] = {
+                    last_popup = "",
+                    last_announce = "",
+                    last_action = "",
+                    timestamp = 0
+                }
+            end
+        end
+    end
+
+    -- Log initialization details
+    log(string.rep("-", 50))
+    log(string.format("Server Started"))
+    log(string.format("ET:Legacy Version: %s", et_version))
+    log(string.format("Server: %s:%s", server_ip, server_port))
+    log(string.format("Map: %s, Round: %d", full_mapname, round))
+    
+    if found_config then
+        log(string.format("Map config loaded: %s (base: %s)", mapname, base_mapname))
+        
+        -- Collect all objectives first
+        local all_objectives = {}
+        
+        -- Add main objectives
+        if map_config.objectives then
+            for _, obj in ipairs(map_config.objectives) do
+                table.insert(all_objectives, obj.name)
+            end
+        end
+        
+        -- Add buildables
+        if map_config.buildables then
+            for name, _ in pairs(map_config.buildables) do
+                table.insert(all_objectives, name)
+            end
+        end
+        
+        -- Log all objectives
+        if #all_objectives > 0 then
+            log(string.format("Map Objectives: %s", table.concat(all_objectives, ", ")))
+        end
+
+        log(string.format("Total objective states initialized: %d", table_count(objective_states)))
+    else
+        log(string.format("No config found for map: %s (base: %s)", full_mapname, base_mapname))
+    end
+    
+    return found_config
 end
 
 local function fetchMatchIDFromAPI()
@@ -427,10 +1243,35 @@ function et_Obituary(target, attacker, meansOfDeath)
             target_lastSpawnTime = gentity_get(target, "pers.lastSpawnTime")
         })
     end
+
+    -- obj_carrier death handling
+    if not configuration.collect_objstats then return end
+    local map_config = map_configs[mapname]
+    if not map_config then return end
+
+    for obj_name, state in pairs(objective_states) do
+        if state.carrier_id == target then
+            local victim_guid = clientGuids[target]
+            local killer_guid = clientGuids[attacker]
+
+            record_obj_stat(victim_guid, "obj_carrierkilled", obj_name, trap_Milliseconds(), {
+                guid = killer_guid,
+                weapon = meansOfDeath,
+                objective = obj_name
+            })
+
+            -- Clear carrier state
+            objective_carriers.players[target] = nil
+            state.carrier_id = nil
+            state.last_action = "killed"
+        end
+    end
 end
 
 -- Intercept client commands for messages
 function et_ClientCommand(clientNum, command)
+    if not configuration.collect_messages then return 0 end
+    
     local commands_to_intercept = {
         ["say"] = true,
         ["say_team"] = true,
@@ -441,25 +1282,32 @@ function et_ClientCommand(clientNum, command)
         ["vsay_buddy"] = true
     }
 
-    if configuration.collect_messages and commands_to_intercept[command] then
+    if commands_to_intercept[command] then
         table_insert(messages, {
             timestamp = trap_Milliseconds(),
             guid = clientGuids[clientNum],
             command = command,
             message = et.trap_Argv(1)
         })
-        return 0
     end
     return 0
 end
 
 local function getAllHitRegions(clientNum)
+    if not clientNum or type(clientNum) ~= "number" then
+        return {}
+    end
+
     local regions = {}
     for _, hitType in ipairs(HR_TYPES) do
-        regions[hitType] = et.gentity_get(clientNum, "pers.playerStats.hitRegions", hitType) or 0
+        local success, count = pcall(function()
+            return et.gentity_get(clientNum, "pers.playerStats.hitRegions", hitType)
+        end)
+        -- If we can't get the hit region count, default to 0
+        regions[hitType] = (success and count) or 0
     end       
     return regions
-end     
+end
 
 -- Function to determine the hit type
 local function getHitRegion(clientNum)
@@ -471,38 +1319,38 @@ local function getHitRegion(clientNum)
     local playerHitRegions = getAllHitRegions(clientNum)
     
     -- Initialize hit regions data if not exists
-    if not hitRegionsData[clientNum] then
-        hitRegionsData[clientNum] = playerHitRegions
+    if not hitRegionsStats[clientNum] then
+        hitRegionsStats[clientNum] = playerHitRegions
         return HR_NONE
     end
 
     -- Compare with previous hit regions to determine which region was hit
     for _, hitType in ipairs(HR_TYPES) do
-        if playerHitRegions[hitType] > (hitRegionsData[clientNum][hitType] or 0) then
-            hitRegionsData[clientNum] = playerHitRegions
+        if playerHitRegions[hitType] > (hitRegionsStats[clientNum][hitType] or 0) then
+            hitRegionsStats[clientNum] = playerHitRegions
             return hitType
         end     
     end
 
     -- Update stored hit regions and return no hit
-    hitRegionsData[clientNum] = playerHitRegions
+    hitRegionsStats[clientNum] = playerHitRegions
     return HR_NONE
 end
 
 -- Capture damage events
 function et_Damage(target, attacker, damage, damageFlags, meansOfDeath)
-    if configuration.collect_damageStats then
-        local hitRegion = getHitRegion(attacker)
-        table_insert(damageStats, {
-            timestamp = trap_Milliseconds(),
-            target = clientGuids[target],
-            attacker = clientGuids[attacker],
-            damage = damage or 0,
-            damageFlags = damageFlags or 0,
-            meansOfDeath = meansOfDeath or 0,
-            hitRegion = HR_NAMES[hitRegion]
-        })
-    end
+    if not configuration.collect_damageStats then return end
+    
+    local hitRegion = getHitRegion(attacker)
+    table_insert(damageStats, {
+        timestamp = trap_Milliseconds(),
+        target = clientGuids[target],
+        attacker = clientGuids[attacker],
+        damage = damage or 0,
+        damageFlags = damageFlags or 0,
+        meansOfDeath = meansOfDeath or 0,
+        hitRegion = HR_NAMES[hitRegion]
+    })
 end
 
 -- char *G_createStats(gentity_t *ent) g_match.c
@@ -558,6 +1406,13 @@ function StoreStats()
 end
 
 function SaveStats()
+    -- Guard against multiple calls
+    if saveStatsState.inProgress then
+        log("SaveStats already in progress, skipping")
+        return
+    end
+    saveStatsState.inProgress = true
+
     local matchID = fetchMatchIDFromAPI(2)
     local mapname = Info_ValueForKey(et.trap_GetConfigstring(et.CS_SERVERINFO), "mapname")
     local round = tonumber(et.trap_Cvar_Get("g_currentRound")) == 0 and 2 or 1
@@ -611,15 +1466,24 @@ function SaveStats()
             team = player_stats_arr[4],
             weaponStats = weaponStats_arr
         }
+
+        -- Add objective stats
+        if configuration.collect_objstats and objstats[guid] then
+            for stat_type, stat_data in pairs(objstats[guid]) do
+                if next(stat_data) then  -- Only add non-empty stat categories
+                    stats_json[guid][stat_type] = stat_data
+                end
+            end
+        end
     end
 
-    -- Combine and sanitize all data at once
+    -- Combine and sanitize
     local final_data = sanitizeData({
         round_info = header_json,
         player_stats = stats_json
     })
 
-    -- JSON encode the sanitized data
+    -- JSON encode
     local json_str = json.encode(final_data)
     if not json_str then
         log("Error: Failed to encode JSON data")
@@ -654,66 +1518,95 @@ function SaveStats()
         if not string.match(configuration.json_filepath, "/$") then
             configuration.json_filepath = configuration.json_filepath .. "/"
         end
-        local json_file = configuration.json_filepath .. string.format("gamestats-%d-%s%s-round-%d.json", matchID, os.date('%Y-%m-%d-%H%M%S-'), mapname, round)
+        local json_file = configuration.json_filepath .. string.format("gamestats-%d-%s%s-round-%d.json", 
+            matchID, 
+            os.date('%Y-%m-%d-%H%M%S-'), 
+            mapname, 
+            round
+        )
 
         -- Save JSON payload to local file
-        local success, err = SaveStatsToFile(json_str_indented, json_file)
+        local success, write_err = SaveStatsToFile(json_str_indented, json_file)
         if not success then
-            log(string.format("Error writing JSON to file: %s", err))
+            log(string.format("Error writing JSON to file: %s", write_err))
         end
     end
 
-    -- Clear data
-    obituaries = {}
-    messages = {}
-    damageStats = {}
-    clientGuids = {}
+    -- Reset tables
+    resetGameState()
 
     if not result or not (type(result) == "table" and result.message == "Request logged successfully") then
         log("Warning: Stats submission failed or returned unexpected response")
     end
+
+    log("SaveStats completed")
 end
 
 function et_RunFrame(levelTime)
     local gamestate = tonumber(et.trap_Cvar_Get("gamestate"))
-    
+
     -- store stats in case player leaves prematurely
     if levelTime >= nextStoreTime then
         StoreStats()
         nextStoreTime = levelTime + storeTimeInterval
     end
 
-    if gamestate == et.GS_INTERMISSION and not intermission then
-        intermission = true
-        StoreStats()
-        scheduledSaveTime = levelTime + saveStatsDelay
-    elseif gamestate == et.GS_INTERMISSION and intermission and levelTime >= scheduledSaveTime and scheduledSaveTime > 0 then
-        SaveStats()
-        scheduledSaveTime = 0
-    end
-
-    if gamestate ~= et.GS_INTERMISSION then
-        intermission = false
-        scheduledSaveTime = 0
+    if gamestate == et.GS_INTERMISSION then
+        if not intermission then
+            log("Entering intermission")
+            intermission = true
+            StoreStats()
+            scheduledSaveTime = levelTime + saveStatsDelay
+        elseif levelTime >= scheduledSaveTime and scheduledSaveTime > 0 and not saveStatsState.inProgress then
+            SaveStats()
+        end
+    else
+        if intermission then
+            log("Leaving intermission")
+            intermission = false
+            scheduledSaveTime = 0
+            saveStatsState.inProgress = false
+        end
     end
 end
 
 local function validateConfiguration()
-    -- Check required API configuration
+    -- Check API token
     if not configuration.api_token or configuration.api_token:match("^%%.*%%$") then
+        log("Configuration error: Invalid or missing API token")
         return false, "Invalid or missing API token"
     end
     
+    -- Check matchid URL
     if not configuration.api_url_matchid or 
        not configuration.api_url_matchid:match("^https?://") or 
        configuration.api_url_matchid:match("^%%.*%%$") then
+        log("Configuration error: Invalid matchid API URL")
         return false, "Invalid matchid API URL"
     end
     
+    -- Check submit URL
     if not configuration.api_url_submit or 
        not configuration.api_url_submit:match("^https?://") or 
        configuration.api_url_submit:match("^%%.*%%$") then
+        log("Configuration error: Invalid submit API URL")
         return false, "Invalid submit API URL"
+    end
+    
+    -- Check map configuration
+    if not map_configs then
+        log("Configuration error: map_configs is nil")
+        return false, "No map configuration found"
+    end
+    
+    if table_count(map_configs) == 0 then
+        log("Configuration error: No map configurations loaded")
+        return false, "No map configurations loaded"
+    end
+    
+    if not common_buildables or not next(common_buildables) then
+        log("Configuration error: No common buildables configuration")
+        return false, "No common buildables configuration loaded"
     end
     
     return true
@@ -721,7 +1614,7 @@ end
 
 function et_InitGame()
     et.RegisterModname(string.format("%s %s", modname, version))
-    
+
     -- Validate configuration
     local config_valid, error_message = validateConfiguration()
     if not config_valid then
@@ -729,22 +1622,9 @@ function et_InitGame()
         return
     end
     
-    -- Initialize local variables
-    maxClients = tonumber(et.trap_Cvar_Get("sv_maxClients")) or maxClients
-
-    initializeServerInfo()
-
-    local et_version = et.trap_Cvar_Get("mod_version")
-    local mapname = et.trap_Cvar_Get("mapname")
-    local round = tonumber(et.trap_Cvar_Get("g_currentRound")) == 0 and 1 or 2
+    -- Initialize server and map info
+    local init_success = initializeServerInfo()
     
-    -- Log initialization
     log(string.rep("-", 50))
-    log(string.format("Server Started"))
-    log(string.format("ET:Legacy Version: %s", et_version))
-    log(string.format("Server: %s:%s", server_ip, server_port))
-    log(string.format("Map: %s, Round: %d", mapname, round))
-    log(string.rep("-", 50))
-    
-    log(string.format("%s v%s initialized successfully", modname, version))
+    log(string.format("%s v%s initialized %s", modname, version, init_success and "successfully" or "with warnings"))
 end
