@@ -23,7 +23,7 @@ api_url_matchid = "https://api.etl.lol/api/v2/stats/etl/match-manager"
 api_url_submit = "https://api.etl.lol/api/v2/stats/etl/matches/stats/submit"
 log_filepath = "/legacy/homepath/legacy/stats/game_stats.log"
 json_filepath = "/legacy/homepath/legacy/stats/"
-logging_enabled = false
+logging_enabled = true
 collect_obituaries = true
 collect_messages = false
 collect_damageStats = false
@@ -121,6 +121,12 @@ plant_pattern = "the side gate"
 destruct_pattern = "allies have destroyed the bunker controls"
 plant_pattern = "the bunker controls"
 
+[maps.braundorf_b4.flags.allies_flag]
+flag_pattern = "Allies capture the factory district!"
+
+[maps.braundorf_b4.flags.axis_flag]
+flag_pattern = "Axis recapture the factory district!"
+
 #####################
 # Map: Bremen B3
 #####################
@@ -157,6 +163,16 @@ plant_pattern = "the wooden barrier"
 [maps.bremen_b3.buildables.truck]
 construct_pattern = "the truck has been repaired!"
 
+[maps.bremen_b3.flags.allies_flag]
+flag_pattern = "The Allies have captured the forward bunker!"
+
+[maps.bremen_b3.flags.axis_flag]
+flag_pattern = "The Allies have captured the forward bunker!"
+
+[maps.bremen_b3.escort.truck]
+escort_pattern = "Allied team has escaped"
+escort_coordinates = "-3143 -589 128"
+
 #####################
 # Map: Decay
 #####################
@@ -182,6 +198,12 @@ plant_pattern = "the fence"
 destruct_pattern = "the allies have destroyed the generator"
 plant_pattern = "the generator"
 
+[maps.decay.flags.allies_flag]
+flag_pattern = "Allies have captured the Forward Flag!"
+
+[maps.decay.flags.axis_flag]
+flag_pattern = "Axis have captured the Forward Flag!"
+
 #####################
 # Map: Erdenberg T2
 #####################
@@ -200,6 +222,12 @@ plant_pattern = "the east flak88"
 destruct_pattern = "the west flak88 has been destroyed"
 plant_pattern = "the west flak88"
 
+[maps.erdenberg_t2.flags.allies_flag]
+flag_pattern = "The Allies have captured the forward bunker!"
+
+[maps.erdenberg_t2.flags.axis_flag]
+flag_pattern = "The Axis have reclaimed the forward bunker!"
+
 #####################
 # Map: ET Brewdog
 #####################
@@ -215,6 +243,12 @@ plant_pattern = "the storage wall"
 [maps.et_brewdog.buildables.bunker_door]
 destruct_pattern = "allies have breached the bunker door"
 plant_pattern = "the bunker door"
+
+[maps.et_brewdog.flags.allies_flag]
+flag_pattern = "Allies have captured the Inner Compound!"
+
+[maps.et_brewdog.flags.axis_flag]
+flag_pattern = "Axis have reclaimed the Inner Compound!"
 
 #####################
 # Map: ET Operation
@@ -288,6 +322,12 @@ plant_pattern = "the main entrance"
 destruct_pattern = "the side wall"
 plant_pattern = "the side wall"
 
+[maps.ice.flags.allies_flag]
+flag_pattern = "Allies have reclaimed the Forward Bunker!"
+
+[maps.ice.flags.axis_flag]
+flag_pattern = "Axis have captured the Forward Bunker!"
+
 #######################################
 # Map: etl_sp_delivery/sp_delivery_te
 #######################################
@@ -311,6 +351,12 @@ construct_pattern = "door Controls have been constructed."
 [maps.sp_delivery.buildables.door_controls_etl]
 construct_pattern = "the vault is now open!"
 
+[maps.sp_delivery.flags.allies_flag]
+flag_pattern = "Allies capture the Forward Bunker!"
+
+[maps.sp_delivery.flags.axis_flag]
+flag_pattern = "Axis reclaim the Forward Bunker!"
+
 #####################
 # Map: Karsiah TE2
 #####################
@@ -327,6 +373,12 @@ return_pattern = "axis returned the south documents"
 [maps.karsiah_te2.buildables.old_city_door]
 destruct_pattern = "allies have destroyed the old city door"
 plant_pattern = "the old city door"
+
+[maps.karsiah_te2.flags.allies_flag]
+flag_pattern = "Allies capture the Old City!"
+
+[maps.karsiah_te2.flags.axis_flag]
+flag_pattern = "Axis reclaimed the Old City!"
 
 #####################
 # Map: Missile
@@ -351,6 +403,12 @@ plant_pattern = "the door control"
 [maps.missile.buildables.rocket_controls]
 construct_pattern = "the rocket controls have been dismantled"
 plant_pattern = "the rocket controls"
+
+[maps.missile.flags.allies_flag]
+flag_pattern = "Allies capture the Forward Bunker!"
+
+[maps.missile.flags.axis_flag]
+flag_pattern = "Axis reclaim the Forward Bunker!"
 
 #####################
 # Map: Radar
@@ -379,6 +437,12 @@ plant_pattern = "the main entrance"
 destruct_pattern = "side entrance has been destroyed"
 plant_pattern = "the side entrance"
 
+[maps.radar.flags.allies_flag]
+flag_pattern = "Allies capture the Forward Bunker!"
+
+[maps.radar.flags.axis_flag]
+flag_pattern = "Axis reclaim the Forward Bunker!"
+
 ######################
 # Map: Reactor_final
 ######################
@@ -405,6 +469,12 @@ destruct_pattern = "coolant tower 1 drained"
 [maps.reactor_final.buildables.coolant_tower_2]
 construct_pattern = "coolant tower 2 refilling"
 destruct_pattern = "coolant tower 2 drained"
+
+[maps.reactor_final.flags.allies_flag]
+flag_pattern = "Allies capture the Forward Bunker!"
+
+[maps.reactor_final.flags.axis_flag]
+flag_pattern = "Axis capture the Forward Bunker!"
 
 #####################
 # Map: Supply
@@ -442,6 +512,20 @@ construct_pattern = "the crane controls have been constructed"
 destruct_pattern = "the crane controls have been destroyed"
 plant_pattern = "the crane controls"
 
+[maps.supply.flags.allies_flag]
+flag_pattern = "The Allies have captured the forward bunker!"
+
+[maps.supply.flags.axis_flag]
+flag_pattern = "The Axis have captured the forward bunker!"
+
+[maps.supply.misc.crane_controls]
+misc_pattern = "The Allies have activated the crane!"
+misc_coordinates = "656 -1360 372"
+
+[maps.supply.escort.truck]
+escort_pattern = "The Allies have escaped with the Gold Crate!"
+escort_coordinates = "2720 1376 192"
+
 #####################
 # Map: SW Goldrush TE
 #####################
@@ -466,6 +550,14 @@ plant_pattern = "truck barrier"
 [maps.sw_goldrush_te.buildables.tank]
 construct_pattern = "the tank has been repaired"
 
+[maps.sw_goldrush_te.escort.tank]
+escort_pattern = "Allied team has destroyed the Bank Doors!"
+escort_coordinates = "1860 -80 -96"
+
+[maps.sw_goldrush_te.escort.truck]
+escort_pattern = "Allied team escaped with the Gold Crate!"
+escort_coordinates = "-3310 -1060 -31"
+
 #####################
 # Map: TE Escape2
 #####################
@@ -481,3 +573,9 @@ plant_pattern = "the main gate!"
 [maps.te_escape2.buildables.tunnel_door]
 destruct_pattern = "allies have destroyed the tunnel door"
 plant_pattern = "the tunnel door"
+
+[maps.te_escape2.flags.allies_flag]
+flag_pattern = "Allies have captured the Forward Bunker!"
+
+[maps.te_escape2.flags.axis_flag]
+flag_pattern = "Axis have reclaimed the Forward Bunker!"

@@ -105,6 +105,21 @@
             - Added config validation
             - Added helper to normalize strings
             - Added helper to strip colors for et_Print 
+
+        07-02-2025: v1.1.1 -- Oksii
+            - Added dynamic flag coordinate detection and tracking from game entities
+            - Added misc objective tracking with coordinate-based attribution
+            - Added escort objective tracking with coordinate-based attribution
+            - Updated clientGuids cache structure to include team information
+            - Fixed all clientGuid lookups to properly handle new cache structure
+            - Improved objective attribution accuracy using team information
+            - Fixed find_nearest_player to use team-aware player lookups
+            - Refactored initializeServerInfo for better objective initialization
+            - Fixed various GUID handling inconsistencies throughout codebase
+            - Streamlined initialization order in initializeServerInfo
+            - Added maximum distance limit (150 units) for coordinate-based objective attribution
+            - Added distance check for flag, misc, and escort objective attribution
+            - Fixed bug where steal events showed raw table instead of GUID
 ]]--
 
 local modname = "game-stats-web-api"
@@ -220,7 +235,10 @@ local function process_config(config)
     for map_name, map_data in pairs(config.maps) do
         normalized[normalize_key(map_name)] = {
             objectives = {},
-            buildables = {}
+            buildables = {},
+            flags = {},
+            misc = {},
+            escort = {}
         }
         
         -- Process objectives
@@ -249,6 +267,34 @@ local function process_config(config)
                         plant_pattern = normalize_key(build_data.plant_pattern or "")
                     }
                 end
+            end
+        end
+
+        -- Process flags configurations
+        if map_data.flags then
+            for flag_name, flag_data in pairs(map_data.flags) do
+                normalized[normalize_key(map_name)].flags[normalize_key(flag_name)] = {
+                    flag_pattern = normalize_key(flag_data.flag_pattern),
+                    flag_coordinates = flag_data.flag_coordinates
+                }
+            end
+        end
+
+        if map_data.misc then
+            for misc_name, misc_data in pairs(map_data.misc) do
+                normalized[normalize_key(map_name)].misc[normalize_key(misc_name)] = {
+                    misc_pattern = normalize_key(misc_data.misc_pattern),
+                    misc_coordinates = misc_data.misc_coordinates
+                }
+            end
+        end
+
+        if map_data.escort then
+            for escort_name, escort_data in pairs(map_data.escort) do
+                normalized[normalize_key(map_name)].escort[normalize_key(escort_name)] = {
+                    escort_pattern = normalize_key(escort_data.escort_pattern),
+                    escort_coordinates = escort_data.escort_coordinates
+                }
             end
         end
     end
@@ -322,6 +368,7 @@ local objective_states     = {}
 local recent_announcements = {}
 local announcements_buffer = 5
 local repair_buffer        = 2000
+local MAX_OBJ_DISTANCE     = 500  -- Maximum distance in game units to consider a player "near" an objective
 
 local intermission         = false
 local saveStatsState       = { inProgress = false } -- safety check to prevent SaveStats looping
@@ -401,27 +448,28 @@ function ConvertTimelimit(timelimit)
 	return string.format("%i:%i%i", mins, tens, seconds)
 end
 
--- Fetch and add GUID to cache
+-- Fetch and add GUID+team to cache
 local clientGuids = setmetatable({}, {
     __index = function(t, clientNum)
         -- Validate client number
         if not clientNum or type(clientNum) ~= "number" then
-            return "WORLD"
+            return { guid = "WORLD", team = 0 }
         end
 
-        -- Fetch guid and cache if not in table
+        -- Fetch guid and team if not in table
         if clientNum >= 0 and clientNum < maxClients then
             local userinfo = trap_GetUserinfo(clientNum)
             if userinfo and userinfo ~= "" then
                 local guid = string.upper(Info_ValueForKey(userinfo, "cl_guid"))
+                local sessionTeam = tonumber(et.gentity_get(clientNum, "sess.sessionTeam")) or 0
                 if guid and guid ~= "" then
-                    t[clientNum] = guid  -- Cache it
-                    return guid
+                    t[clientNum] = { guid = guid, team = sessionTeam }
+                    return t[clientNum]
                 end
             end
         end
 
-        return "WORLD"  -- Fallback
+        return { guid = "WORLD", team = 0 }
     end
 })
 
@@ -538,6 +586,9 @@ local function record_obj_stat(guid, event_type, objective, timestamp, killer_in
             obj_repaired = {},
             obj_defused = {},
             obj_carrierkilled = {},
+            obj_flagcaptured = {},
+            obj_misc = {},
+            obj_escort = {},
             shoves_given = {},
             shoves_received = {}
         }
@@ -577,11 +628,33 @@ local function update_objective_state(obj_name, action, guid, normalized_text)
         objective_states[obj_name].last_announce = normalized_text
     end
     
-    if guid then
-        objective_states[obj_name].planter_guid = (action == "planted") and guid or nil
+    if guid and action == "planted" then
+        objective_states[obj_name].planter_guid = guid.guid
     end
 
     return timestamp
+end
+
+-- Get list of covies
+local function get_active_covert_ops()
+    local COVERT_OPS = 4
+    local AXIS = 1
+    local ALLIES = 2
+    local covert_ops_clients = {}
+
+    for clientNum = 0, maxClients - 1 do
+        local client = clientGuids[clientNum]
+        if client then
+            local sessionTeam = client.team
+            local playerType = tonumber(et.gentity_get(clientNum, "sess.playerType"))
+
+            if (sessionTeam == AXIS or sessionTeam == ALLIES) and playerType == COVERT_OPS then
+                table.insert(covert_ops_clients, clientNum)
+                log(string.format("Found covert ops: Player %d (GUID: %s)", clientNum, client.guid))
+            end
+        end
+    end    
+    return covert_ops_clients
 end
 
 local function handle_destroyer_attribution(obj_name)
@@ -598,7 +671,7 @@ local function handle_destroyer_attribution(obj_name)
     else
         local covert_ops = get_active_covert_ops()
         if #covert_ops == 1 then
-            destroyer_guid = clientGuids[covert_ops[1]]
+            destroyer_guid = clientGuids[covert_ops[1]].guid
             valid_destroyer_found = true
             log(string.format("%s destroyed by covert: %s", obj_name, destroyer_guid))
         elseif #covert_ops > 1 then
@@ -618,26 +691,6 @@ local function handle_buildable_destruction(obj_name, normalized_text)
     end
 
     update_objective_state(obj_name, "destroyed", nil, normalized_text)
-end
-
--- Get list of covies
-local function get_active_covert_ops()
-    local COVERT_OPS = 4
-    local AXIS = 1
-    local ALLIES = 2
-    local covert_ops_clients = {}
-
-    for clientNum = 0, maxClients - 1 do
-        if clientGuids[clientNum] then  -- Only check connected clients
-            local sessionTeam = tonumber(et.gentity_get(clientNum, "sess.sessionTeam"))
-            local playerType = tonumber(et.gentity_get(clientNum, "sess.playerType"))
-
-            if (sessionTeam == AXIS or sessionTeam == ALLIES) and playerType == COVERT_OPS then
-                table.insert(covert_ops_clients, clientNum)
-            end
-        end
-    end    
-    return covert_ops_clients
 end
 
 local function check_recent_construction(obj_name, patterns, obj_config, current_time)
@@ -715,6 +768,112 @@ local function clear_previous_objective_entries(guid, objective_name, timestamp)
     end
 end
 
+-- calculate distance between two 3D points
+local function calculate_distance(point1, point2)
+    local x1, y1, z1 = point1[1], point1[2], point1[3]
+    local x2, y2, z2 = point2[1], point2[2], point2[3]
+    return math.sqrt((x2-x1)^2 + (y2-y1)^2 + (z2-z1)^2)
+end
+
+local function getEntityCoordinates(entityId)
+    if not entityId then return nil end
+    
+    local origin = et.gentity_get(entityId, "origin")
+    if not origin then return nil end
+    
+    -- Format coordinates as string
+    return string.format("%d %d %d", origin[1], origin[2], origin[3])
+end
+
+-- Function to find and get flag coordinates
+local function getFlagCoordinates()
+    local flags = {}
+    
+    -- Scan through possible entity IDs
+    for i = 64, 1021 do
+        local classname = et.gentity_get(i, "classname")
+        if classname == "team_WOLF_checkpoint" then
+            local coords = getEntityCoordinates(i)
+            if coords then
+                -- Store coordinates for both teams since it's the same point
+                flags["allies_flag"] = {
+                    flag_pattern = "The Allies have captured the forward bunker!",
+                    flag_coordinates = coords
+                }
+                flags["axis_flag"] = {
+                    flag_pattern = "The Axis have captured the forward bunker!",
+                    flag_coordinates = coords
+                }
+                break -- We found what we needed
+            end
+        end
+    end
+    
+    return flags
+end
+
+-- parse coordinates string into a table
+local function parse_coordinates(coord_string)
+    local x, y, z = coord_string:match("([%-%.%d]+)%s+([%-%.%d]+)%s+([%-%.%d]+)")
+    return x and {tonumber(x), tonumber(y), tonumber(z)} or nil
+end
+
+-- find all players to obj coordinates
+local function find_nearest_players(coordinates, team)
+    local coord_table = parse_coordinates(coordinates)
+    if not coord_table then 
+        log("Failed to parse coordinates: " .. tostring(coordinates))
+        return nil 
+    end
+
+    log(string.format("Objective coordinates: %d %d %d", coord_table[1], coord_table[2], coord_table[3]))
+    
+    local nearest_players = {}
+    local nearest_distance = math.huge
+
+    -- Debug print all player positions
+    log("=== Player Positions ===")
+    for clientNum = 0, maxClients - 1 do
+        local client = clientGuids[clientNum]
+        if client and client.team == team then
+            -- Get entity position
+            local origin = et.gentity_get(clientNum, "r.currentOrigin")  -- Use currentOrigin instead of ps.origin
+            if origin then
+                local distance = calculate_distance(coord_table, origin)
+                log(string.format("Player %d (Team %d): Pos(%d, %d, %d) Distance: %.2f", 
+                    clientNum, team, 
+                    math.floor(origin[1]), 
+                    math.floor(origin[2]), 
+                    math.floor(origin[3]), 
+                    distance))
+            
+                if distance <= MAX_OBJ_DISTANCE then
+                    if distance < nearest_distance then
+                        nearest_distance = distance
+                        nearest_players = {clientNum}
+                    elseif distance == nearest_distance then
+                        table.insert(nearest_players, clientNum)
+                    end
+                end
+            end
+        end
+    end
+    log("=====================")
+
+    -- Log results
+    if #nearest_players > 1 then
+        local guids = {}
+        for _, clientNum in ipairs(nearest_players) do
+            table.insert(guids, clientGuids[clientNum].guid)
+        end
+        log(string.format("Multiple players at same distance: %s", table.concat(guids, ", ")))
+    elseif #nearest_players == 0 then
+        log("No players within range of objective")
+    end
+
+    return nearest_players
+end
+
 function et_Print(text)
     local map_config = map_configs[mapname]
     if not map_config then return end
@@ -783,6 +942,79 @@ function et_Print(text)
                 end
             end
         end
+        
+        -- Process flag captures
+        if map_config.flags then
+            -- Check Allies flag capture
+            if map_config.flags.allies_flag and
+               string.find(normalized_text, normalize_key(map_config.flags.allies_flag.flag_pattern)) then
+                local nearest_allies = find_nearest_players(
+                    map_config.flags.allies_flag.flag_coordinates,
+                    2  -- For Allies
+                )
+                if nearest_allies and #nearest_allies > 0 then
+                    for _, clientNum in ipairs(nearest_allies) do
+                        local guid = clientGuids[clientNum].guid
+                        record_obj_stat(guid, "obj_flagcaptured", "allies_flag", current_time)
+                        log(string.format("Allies flag capture attributed to: %s", guid))
+                    end
+                end
+            end
+        
+            -- Check Axis flag capture
+            if map_config.flags.axis_flag and
+               string.find(normalized_text, normalize_key(map_config.flags.axis_flag.flag_pattern)) then
+                local nearest_axis = find_nearest_players(
+                    map_config.flags.axis_flag.flag_coordinates,
+                    1  -- For Axis
+                )
+                if nearest_axis and #nearest_axis > 0 then
+                    for _, clientNum in ipairs(nearest_axis) do
+                        local guid = clientGuids[clientNum].guid
+                        record_obj_stat(guid, "obj_flagcaptured", "axis_flag", current_time)
+                        log(string.format("Axis flag capture attributed to: %s", guid))
+                    end
+                end
+            end
+        end
+
+        if map_config.misc then
+            for misc_name, misc_data in pairs(map_config.misc) do
+                if string.find(normalized_text, normalize_key(misc_data.misc_pattern)) then
+                    local nearest_allies = find_nearest_players(
+                        misc_data.misc_coordinates,
+                        2  -- For Allies, since these are typically Allies actions
+                    )
+                    if nearest_allies and #nearest_allies > 0 then
+                        for _, clientNum in ipairs(nearest_allies) do
+                            local guid = clientGuids[clientNum].guid
+                            record_obj_stat(guid, "obj_misc", misc_name, current_time)
+                            log(string.format("Misc event '%s' attributed to: %s", misc_name, guid))
+                        end
+                    end
+                    break
+                end
+            end
+        end
+
+        if map_config.escort then
+            for escort_name, escort_data in pairs(map_config.escort) do
+                if string.find(normalized_text, normalize_key(escort_data.escort_pattern)) then
+                    local nearest_allies = find_nearest_players(
+                        escort_data.escort_coordinates,
+                        2  -- For Allies, since these are typically Allies actions
+                    )
+                    if nearest_allies and #nearest_allies > 0 then
+                        for _, clientNum in ipairs(nearest_allies) do
+                            local guid = clientGuids[clientNum].guid
+                            record_obj_stat(guid, "obj_escort", escort_name, current_time)
+                            log(string.format("Escort event '%s' attributed to: %s", escort_name, guid))
+                        end
+                    end
+                    break
+                end
+            end
+        end
     end
 
     -- Handle objectives and popups
@@ -818,26 +1050,26 @@ function et_Print(text)
         if id and event_text then
             local guid = clientGuids[tonumber(id)]
             local normalized_text = normalize_key(event_text:match("^%s*(.-)%s*$"))
-
+    
             -- Check common buildables first
             for obj_name, common_config in pairs(common_buildables) do
                 if map_config.buildables[obj_name] and 
                    match_any_pattern(normalized_text, common_config.patterns.plant) then
-                    record_obj_stat(guid, "obj_" .. action_name, obj_name, trap_Milliseconds())
-                    log(string.format("%s: %s by %s", action_name, obj_name, guid))
+                    record_obj_stat(guid.guid, "obj_" .. action_name, obj_name, trap_Milliseconds())
+                    log(string.format("%s: %s by %s", action_name, obj_name, guid.guid))
                     update_objective_state(obj_name, action_name, guid)
                     return
                 end
             end
-
+    
             -- Then check map-specific buildables
             for obj_name, obj_config in pairs(map_config.buildables) do
                 if type(obj_config) ~= "boolean" and 
                    obj_config.plant_pattern and 
                    obj_config.plant_pattern ~= "" and
                    string.find(normalized_text, normalize_key(obj_config.plant_pattern)) then
-                    record_obj_stat(guid, "obj_" .. action_name, obj_name, trap_Milliseconds())
-                    log(string.format("%s: %s by %s", action_name, obj_name, guid))
+                    record_obj_stat(guid.guid, "obj_" .. action_name, obj_name, trap_Milliseconds())
+                    log(string.format("%s: %s by %s", action_name, obj_name, guid.guid))
                     update_objective_state(obj_name, action_name, guid)
                     break
                 end
@@ -858,7 +1090,7 @@ function et_Print(text)
             local guid = clientGuids[tonumber(id)]
             local objective_name = "Unknown Repair"
             local current_time = trap_Milliseconds()
-
+    
             -- Check common buildables first
             for obj_name, common_config in pairs(common_buildables) do
                 if map_config.buildables[obj_name] and 
@@ -867,7 +1099,7 @@ function et_Print(text)
                     break
                 end
             end
-
+    
             -- Only check map-specific if no common match
             if objective_name == "Unknown Repair" then
                 for obj_name, obj_config in pairs(map_config.buildables) do
@@ -880,7 +1112,7 @@ function et_Print(text)
                     end
                 end
             end
-            record_obj_stat(guid, "obj_repaired", objective_name, current_time)
+            record_obj_stat(guid.guid, "obj_repaired", objective_name, current_time)
         end
     end
 
@@ -896,14 +1128,16 @@ function et_Print(text)
                     local normalized_popup = normalize_key(strip_colors(objective_states[obj.name].last_popup))
 
                     if string.find(normalized_popup, normalize_key(obj.steal_pattern)) then
-                        local guid = clientGuids[id]
-                        record_obj_stat(guid, "obj_taken", obj.name, trap_Milliseconds())
-                        log(string.format("Steal: %s by %s", obj.name, guid))
-
-                        objective_carriers.players[id] = obj.name
-                        objective_states[obj.name].carrier_id = id
-                        if not contains(objective_carriers.ids, id) then
-                            table.insert(objective_carriers.ids, id)
+                        local client = clientGuids[id]
+                        if client then
+                            record_obj_stat(client.guid, "obj_taken", obj.name, trap_Milliseconds())
+                            log(string.format("Steal: %s by %s", obj.name, client.guid))
+    
+                            objective_carriers.players[id] = obj.name
+                            objective_states[obj.name].carrier_id = id
+                            if not contains(objective_carriers.ids, id) then
+                                table.insert(objective_carriers.ids, id)
+                            end
                         end
                         break
                     end
@@ -927,8 +1161,8 @@ function et_Print(text)
                             local guid = clientGuids[carrier_id]
                             local timestamp = trap_Milliseconds()
 
-                            record_obj_stat(guid, "obj_secured", obj.name, timestamp)
-                            log(string.format("Secure: %s by %s", obj.name, guid))
+                            record_obj_stat(guid.guid, "obj_secured", obj.name, timestamp)
+                            log(string.format("Secure: %s by %s", obj.name, guid.guid))
 
                             -- Clear carrier states
                             objective_carriers.players[carrier_id] = nil
@@ -953,15 +1187,13 @@ function et_Print(text)
     if configuration.collect_shovestats then
         local shover, target = string.match(text, "^Shove: (%d+) (%d+)")
         if shover and target then
-            local shover_guid = clientGuids[tonumber(shover)]
-            local target_guid = clientGuids[tonumber(target)]
+            local shover_guid = clientGuids[tonumber(shover)].guid
+            local target_guid = clientGuids[tonumber(target)].guid
             local timestamp = trap_Milliseconds()
             
             if shover_guid and target_guid then
                 record_obj_stat(shover_guid, "shoves_given", target_guid, timestamp)
                 record_obj_stat(target_guid, "shoves_received", shover_guid, timestamp)
-            else
-                log(string.format("Failed to get GUIDs for shove event - Shover: %s, Target: %s", shover, target))
             end
         end
     end
@@ -1147,6 +1379,10 @@ local function initializeServerInfo()
     -- Initialize objective states if we have a valid map config
     local map_config = map_configs[mapname]
     if map_config then
+        -- Collect all objectives first
+        local all_objectives = {}
+        
+        -- Initialize objective states
         if map_config.objectives then
             for _, obj in ipairs(map_config.objectives) do
                 objective_states[obj.name] = {
@@ -1157,9 +1393,11 @@ local function initializeServerInfo()
                     timestamp = 0,
                     planter_guid = nil
                 }
+                table.insert(all_objectives, obj.name)
             end
         end
         
+        -- Initialize buildables
         if map_config.buildables then
             for obj_name, obj_config in pairs(map_config.buildables) do
                 objective_states[obj_name] = {
@@ -1168,43 +1406,56 @@ local function initializeServerInfo()
                     last_action = "",
                     timestamp = 0
                 }
+                table.insert(all_objectives, obj_name)
             end
-        end
-    end
-
-    -- Log initialization details
-    log(string.rep("-", 50))
-    log(string.format("Server Started"))
-    log(string.format("ET:Legacy Version: %s", et_version))
-    log(string.format("Server: %s:%s", server_ip, server_port))
-    log(string.format("Map: %s, Round: %d", full_mapname, round))
-    
-    if found_config then
-        log(string.format("Map config loaded: %s (base: %s)", mapname, base_mapname))
-        
-        -- Collect all objectives first
-        local all_objectives = {}
-        
-        -- Add main objectives
-        if map_config.objectives then
-            for _, obj in ipairs(map_config.objectives) do
-                table.insert(all_objectives, obj.name)
-            end
-        end
-        
-        -- Add buildables
-        if map_config.buildables then
-            for name, _ in pairs(map_config.buildables) do
-                table.insert(all_objectives, name)
-            end
-        end
-        
-        -- Log all objectives
-        if #all_objectives > 0 then
-            log(string.format("Map Objectives: %s", table.concat(all_objectives, ", ")))
         end
 
-        log(string.format("Total objective states initialized: %d", table_count(objective_states)))
+        -- Initialize flag configurations dynamically
+        if map_config.flags then
+            local dynamic_flags = getFlagCoordinates()
+            if dynamic_flags then
+                for flag_name, flag_data in pairs(dynamic_flags) do
+                    if map_config.flags[flag_name] then
+                        map_config.flags[flag_name].flag_coordinates = flag_data.flag_coordinates
+                        log(string.format("Updated %s coordinates to: %s", 
+                            flag_name, 
+                            flag_data.flag_coordinates))
+                        table.insert(all_objectives, "flag_" .. flag_name)
+                    end
+                end
+            end
+        end
+
+        -- Initialize misc objectives
+        if map_config.misc then
+            for misc_name, _ in pairs(map_config.misc) do
+                table.insert(all_objectives, "misc_" .. misc_name)
+            end
+        end
+
+        if map_config.escort then
+            for escort_name, _ in pairs(map_config.escort) do
+                table.insert(all_objectives, "escort_" .. escort_name)
+            end
+        end
+
+        -- Log initialization details
+        log(string.rep("-", 50))
+        log(string.format("Server Started"))
+        log(string.format("ET:Legacy Version: %s", et_version))
+        log(string.format("Server: %s:%s", server_ip, server_port))
+        log(string.format("Map: %s, Round: %d", full_mapname, round))
+        
+        if found_config then
+            log(string.format("Map config loaded: %s (base: %s)", mapname, base_mapname))
+            
+            -- Log all objectives
+            if #all_objectives > 0 then
+                log(string.format("Map Objectives: %s", table.concat(all_objectives, ", ")))
+            end
+
+            log(string.format("Total objective states initialized: %d", table_count(objective_states)))
+        end
     else
         log(string.format("No config found for map: %s (base: %s)", full_mapname, base_mapname))
     end
@@ -1236,8 +1487,8 @@ function et_Obituary(target, attacker, meansOfDeath)
     if configuration.collect_obituaries then
         table_insert(obituaries, {
             timestamp = trap_Milliseconds(),
-            target = clientGuids[target],
-            attacker = clientGuids[attacker],
+            target = clientGuids[target].guid,
+            attacker = clientGuids[attacker].guid,
             meansOfDeath = meansOfDeath,
             attacker_lastSpawnTime = gentity_get(attacker, "pers.lastSpawnTime"),
             target_lastSpawnTime = gentity_get(target, "pers.lastSpawnTime")
@@ -1251,8 +1502,8 @@ function et_Obituary(target, attacker, meansOfDeath)
 
     for obj_name, state in pairs(objective_states) do
         if state.carrier_id == target then
-            local victim_guid = clientGuids[target]
-            local killer_guid = clientGuids[attacker]
+            local victim_guid = clientGuids[target].guid
+            local killer_guid = clientGuids[attacker].guid
 
             record_obj_stat(victim_guid, "obj_carrierkilled", obj_name, trap_Milliseconds(), {
                 guid = killer_guid,
@@ -1285,7 +1536,7 @@ function et_ClientCommand(clientNum, command)
     if commands_to_intercept[command] then
         table_insert(messages, {
             timestamp = trap_Milliseconds(),
-            guid = clientGuids[clientNum],
+            guid = clientGuids[clientNum].guid,
             command = command,
             message = et.trap_Argv(1)
         })
@@ -1344,8 +1595,8 @@ function et_Damage(target, attacker, damage, damageFlags, meansOfDeath)
     local hitRegion = getHitRegion(attacker)
     table_insert(damageStats, {
         timestamp = trap_Milliseconds(),
-        target = clientGuids[target],
-        attacker = clientGuids[attacker],
+        target = clientGuids[target].guid,
+        attacker = clientGuids[attacker].guid,
         damage = damage or 0,
         damageFlags = damageFlags or 0,
         meansOfDeath = meansOfDeath or 0,
@@ -1624,6 +1875,21 @@ function et_InitGame()
     
     -- Initialize server and map info
     local init_success = initializeServerInfo()
+
+    -- Initialize clientGuids cache for all connected players
+    for clientNum = 0, maxClients - 1 do
+        if et.gentity_get(clientNum, "pers.connected") == CON_CONNECTED then
+            local userinfo = trap_GetUserinfo(clientNum)
+            if userinfo and userinfo ~= "" then
+                local guid = string.upper(Info_ValueForKey(userinfo, "cl_guid"))
+                local sessionTeam = tonumber(et.gentity_get(clientNum, "sess.sessionTeam")) or 0
+                if guid and guid ~= "" then
+                    clientGuids[clientNum] = { guid = guid, team = sessionTeam }
+                    log(string.format("Initialized client %d - GUID: %s, Team: %d", clientNum, guid, sessionTeam))
+                end
+            end
+        end
+    end
     
     log(string.rep("-", 50))
     log(string.format("%s v%s initialized %s", modname, version, init_success and "successfully" or "with warnings"))
