@@ -123,7 +123,7 @@
 ]]--
 
 local modname = "game-stats-web-api"
-local version = "1.1.0"
+local version = "1.1.1"
 
 -- Required libraries
 local json = require("dkjson")
