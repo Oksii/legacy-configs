@@ -120,10 +120,13 @@
             - Added maximum distance limit (150 units) for coordinate-based objective attribution
             - Added distance check for flag, misc, and escort objective attribution
             - Fixed bug where steal events showed raw table instead of GUID
+
+        18-02-2025: v1.1.2 -- Oksii
+            - Added health check in find_nearest_player to avoid attributing spectators
 ]]--
 
 local modname = "game-stats-web-api"
-local version = "1.1.1"
+local version = "1.1.2"
 
 -- Required libraries
 local json = require("dkjson")
@@ -818,7 +821,7 @@ local function parse_coordinates(coord_string)
     return x and {tonumber(x), tonumber(y), tonumber(z)} or nil
 end
 
--- find all players to obj coordinates
+-- find all players near obj coordinates
 local function find_nearest_players(coordinates, team)
     local coord_table = parse_coordinates(coordinates)
     if not coord_table then 
@@ -836,25 +839,37 @@ local function find_nearest_players(coordinates, team)
     for clientNum = 0, maxClients - 1 do
         local client = clientGuids[clientNum]
         if client and client.team == team then
-            -- Get entity position
-            local origin = et.gentity_get(clientNum, "r.currentOrigin")  -- Use currentOrigin instead of ps.origin
-            if origin then
-                local distance = calculate_distance(coord_table, origin)
-                log(string.format("Player %d (Team %d): Pos(%d, %d, %d) Distance: %.2f", 
-                    clientNum, team, 
-                    math.floor(origin[1]), 
-                    math.floor(origin[2]), 
-                    math.floor(origin[3]), 
-                    distance))
+            -- Check both health and body contents for alive or downed-but-not-gibbed state
+            local health = tonumber(gentity_get(clientNum, "health"))
+            local body = tonumber(gentity_get(clientNum, "r.contents"))
             
-                if distance <= MAX_OBJ_DISTANCE then
-                    if distance < nearest_distance then
-                        nearest_distance = distance
-                        nearest_players = {clientNum}
-                    elseif distance == nearest_distance then
-                        table.insert(nearest_players, clientNum)
+            -- Player is either alive or downed but not gibbed
+            if health > 0 or (health <= 0 and body == 67108864) then
+                -- Get entity position
+                local origin = gentity_get(clientNum, "r.currentOrigin")
+                if origin then
+                    local distance = calculate_distance(coord_table, origin)
+                    log(string.format("Player %d (Team %d): Pos(%d, %d, %d) Distance: %.2f HP: %d Body: %d", 
+                        clientNum, team, 
+                        math.floor(origin[1]), 
+                        math.floor(origin[2]), 
+                        math.floor(origin[3]), 
+                        distance,
+                        health,
+                        body))
+                
+                    if distance <= MAX_OBJ_DISTANCE then
+                        if distance < nearest_distance then
+                            nearest_distance = distance
+                            nearest_players = {clientNum}
+                        elseif distance == nearest_distance then
+                            table.insert(nearest_players, clientNum)
+                        end
                     end
                 end
+            else
+                log(string.format("Player %d (Team %d): Dead/Gibbed (HP: %s Body: %s)", 
+                    clientNum, team, tostring(health), tostring(body)))
             end
         end
     end
