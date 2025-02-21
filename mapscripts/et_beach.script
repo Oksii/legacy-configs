@@ -10,12 +10,35 @@
 
 game_manager
 {
+
 	spawn
 	{
 
 
 		// mortis - new allied supply bunker spawns
-
+		
+		delete {
+            origin "-704 3624 304"
+        }
+        delete {
+            origin "640 2264 416"
+        }
+        delete {
+            origin "-360 1376 304"
+        }
+        delete {
+            origin "488 472 464"
+        }
+        delete {
+            origin "-2024 3824 128"
+        }
+        delete {
+            origin "-2368 1792 128"
+        }
+        delete {
+            origin "-2368 2520 128"
+        }
+		
 		create
 		{
 			scriptName "supplybunker_obj"
@@ -233,6 +256,10 @@ game_manager
 		// Play objective 1_2 & 1
 		wm_teamvoiceannounce 0 "sideentr_allies_defend"
 		wm_teamvoiceannounce 1 "sideentr_allies_destroy"
+
+		// remove MG42s at flag
+		wait 150
+		setstate t364 invisible
 	}
 
 	trigger objective1
