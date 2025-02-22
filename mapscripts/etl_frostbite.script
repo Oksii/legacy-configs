@@ -69,7 +69,7 @@ game_manager
 		setstate allied_hut_doors invisible  	// widen the Allied spawn hut exits by opening up the other door half (default open)
 		trigger gramophone_hint remove			// disable the gramophone entirely (default enabled)
 		// trigger axis_barracks_door open_door	// open a connection doorway from Axis upper barracks spawn to garage spawn (default closed)
-		// setstate guidance_system invisible	// hide the wire-based guidance system connecting documents and transmitter (default enabled)
+		setstate guidance_system invisible		// hide the wire-based guidance system connecting documents and transmitter (default enabled)
 		// globalaccum 2 bitset 1				// disable map explanation routine during warm-up (non-functional in v18. Can be disregarded.)
 		//===================================================================================
 		
