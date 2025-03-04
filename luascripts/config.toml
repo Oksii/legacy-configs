@@ -167,7 +167,7 @@ construct_pattern = "the truck has been repaired!"
 flag_pattern = "The Allies have captured the forward bunker!"
 
 [maps.bremen_b3.flags.axis_flag]
-flag_pattern = "The Allies have captured the forward bunker!"
+flag_pattern = "The Axis have reclaimed the forward bunker!"
 
 [maps.bremen_b3.escort.truck]
 escort_pattern = "Allied team has escaped"
