@@ -123,10 +123,13 @@
 
         18-02-2025: v1.1.2 -- Oksii
             - Added health check in find_nearest_player to avoid attributing spectators
+        
+        14-03-2025: v1.1.3 -- Oksii
+            - Added tracking for class switches via ClientUserinfoChanged
 ]]--
 
 local modname = "game-stats-web-api"
-local version = "1.1.2"
+local version = "1.1.3"
 
 -- Required libraries
 local json = require("dkjson")
@@ -401,6 +404,15 @@ local HR_NAMES = {
     [HR_NONE] = "HR_NONE"
 }
 
+local playerClassSwitches = {}
+local CLASS_LOOKUP = {
+    [0] = "soldier",
+    [1] = "medic",
+    [2] = "engineer",
+    [3] = "fieldop",
+    [4] = "covertops"
+}
+
 -- Caching function references
 local trap_GetUserinfo = et.trap_GetUserinfo
 local Info_ValueForKey = et.Info_ValueForKey
@@ -520,6 +532,7 @@ local function resetGameState()
     obituaries = {}
     objstats = {}
     messages = {}
+    playerClassSwitches = {}
 
     -- Clear client tracking
     clientGuids = {}
@@ -553,6 +566,50 @@ local function get_base_map_name(full_mapname)
     end
     
     return full_mapname
+end
+
+-- Track class changes with ClientUserinfoChanged
+function et_ClientUserinfoChanged(clientNum)
+    local userinfo = trap_GetUserinfo(clientNum)
+    if userinfo and userinfo ~= "" then
+        local guid = string.upper(Info_ValueForKey(userinfo, "cl_guid"))
+        local sessionTeam = tonumber(et.gentity_get(clientNum, "sess.sessionTeam")) or 0
+        
+        if guid and guid ~= "" then
+            local oldTeamInfo = clientGuids[clientNum]
+            clientGuids[clientNum] = { guid = guid, team = sessionTeam }
+            
+            -- check for class changes
+            local playerType = tonumber(et.gentity_get(clientNum, "sess.playerType"))
+            
+            if playerType ~= nil and (sessionTeam == 1 or sessionTeam == 2) then
+                if not playerClassSwitches[guid] then
+                    playerClassSwitches[guid] = {}
+                end
+                
+                -- Get previous class
+                local previousClass = nil
+                if #playerClassSwitches[guid] > 0 then
+                    previousClass = playerClassSwitches[guid][#playerClassSwitches[guid]].toClass
+                end
+                
+                -- Only record if class actually changed
+                if previousClass ~= playerType then
+                    table.insert(playerClassSwitches[guid], {
+                        timestamp = trap_Milliseconds(),
+                        fromClass = previousClass,
+                        toClass = playerType
+                    })
+                    
+                    log(string.format("Player %s switched class from %s to %s", 
+                        guid, 
+                        previousClass and CLASS_LOOKUP[previousClass] or "none",
+                        CLASS_LOOKUP[playerType] or "unknown"
+                    ))
+                end
+            end
+        end
+    end
 end
 
 -- Objective state management
@@ -1740,6 +1797,19 @@ function SaveStats()
                     stats_json[guid][stat_type] = stat_data
                 end
             end
+        end
+
+        -- Add class switch stats
+        if playerClassSwitches[guid] and #playerClassSwitches[guid] > 0 then
+            local formattedSwitches = {}
+            for i, switch in ipairs(playerClassSwitches[guid]) do
+                table.insert(formattedSwitches, {
+                    timestamp = switch.timestamp,
+                    fromClass = switch.fromClass and CLASS_LOOKUP[switch.fromClass] or nil,
+                    toClass = switch.toClass and CLASS_LOOKUP[switch.toClass] or "unknown"
+                })
+            end
+            stats_json[guid].class_switches = formattedSwitches
         end
     end
 
