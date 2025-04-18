@@ -1621,7 +1621,7 @@ function et_Obituary(target, attacker, meansOfDeath)
             attacker = clientGuids[attacker].guid,
             meansOfDeath = meansOfDeath,
             attackerRespawnTime = attackerRespawnTime,
-            victimRespawnTime = victimRespawnTime
+            victimRespawnTime = victimRespawnTime,
             attacker_lastSpawnTime = gentity_get(attacker, "pers.lastSpawnTime"),
             target_lastSpawnTime = gentity_get(target, "pers.lastSpawnTime")
         })
