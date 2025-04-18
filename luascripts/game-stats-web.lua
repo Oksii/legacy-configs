@@ -1605,8 +1605,15 @@ end
 -- Capture obituaries
 function et_Obituary(target, attacker, meansOfDeath)
     if configuration.collect_obituaries then
-        local attackerRespawnTime = calculateReinfTime(et.gentity_get(target, "sess.sessionTeam"))
+
         local victimRespawnTime = calculateReinfTime(et.gentity_get(attacker, "sess.sessionTeam"))
+
+        local attackerRespawnTime = 0
+
+        -- Check if the attacker is not the world
+        if attacker ~= 1022 then      
+            attackerRespawnTime = calculateReinfTime(et.gentity_get(target, "sess.sessionTeam"))        
+        end
         
         table_insert(obituaries, {
             timestamp = trap_Milliseconds(),
