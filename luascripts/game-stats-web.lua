@@ -126,10 +126,13 @@
         
         14-03-2025: v1.1.3 -- Oksii
             - Added tracking for class switches via ClientUserinfoChanged
+
+        18-04-2025: v1.1.4 -- HeDo
+            - Added spawntime tracking to obituaries
 ]]--
 
 local modname = "game-stats-web-api"
-local version = "1.1.3"
+local version = "1.1.4"
 
 -- Required libraries
 local json = require("dkjson")
@@ -413,6 +416,13 @@ local CLASS_LOOKUP = {
     [4] = "covertops"
 }
 
+-- Constants and variables for spawn time tracking
+local MAX_REINFSEEDS = 8
+local REINF_BLUEDELT = 3
+local REINF_REDDELT  = 2
+local levelTime      = 0
+local aReinfOffset   = {}
+
 -- Caching function references
 local trap_GetUserinfo = et.trap_GetUserinfo
 local Info_ValueForKey = et.Info_ValueForKey
@@ -566,6 +576,44 @@ local function get_base_map_name(full_mapname)
     end
     
     return full_mapname
+end
+
+function parseReinforcementTimes()
+    local reinfSeedString = et.trap_GetConfigstring(et.CS_REINFSEEDS)
+    local reinfSeeds = {}
+    local aReinfSeeds = { 11, 3, 13, 7, 2, 5, 1, 17 }
+    for seed in string.gmatch(reinfSeedString, "%d+") do
+        table.insert(reinfSeeds, tonumber(seed))
+    end
+
+    local offsets = {}
+    offsets[et.TEAM_ALLIES] = reinfSeeds[1] >> REINF_BLUEDELT
+    offsets[et.TEAM_AXIS]   = math.floor(reinfSeeds[2] / (1 << REINF_REDDELT))
+
+    for i = et.TEAM_AXIS, et.TEAM_ALLIES do
+        for j = 1, MAX_REINFSEEDS do
+            if (j-1) == offsets[i] then
+                aReinfOffset[i] = math.floor(reinfSeeds[j + 2] / aReinfSeeds[j])
+                aReinfOffset[i] = aReinfOffset[i] * 1000
+                break
+            end
+        end
+    end
+end
+
+function calculateReinfTime(team)
+    -- if game is paused then that CS is being updated every 500ms
+    local levelStartTime = et.trap_GetConfigstring(et.CS_LEVEL_START_TIME)
+    local dwDeployTime
+
+    if team == et.TEAM_AXIS then
+        dwDeployTime = tonumber(et.trap_Cvar_Get("g_redlimbotime"))
+    elseif team == et.TEAM_ALLIES then
+        dwDeployTime = tonumber(et.trap_Cvar_Get("g_bluelimbotime"))
+    else
+        return
+    end
+    return (dwDeployTime - ((aReinfOffset[team] + levelTime - levelStartTime) % dwDeployTime)) * 0.001
 end
 
 -- Track class changes with ClientUserinfoChanged
@@ -1557,13 +1605,23 @@ end
 -- Capture obituaries
 function et_Obituary(target, attacker, meansOfDeath)
     if configuration.collect_obituaries then
+
+        local victimRespawnTime = calculateReinfTime(et.gentity_get(attacker, "sess.sessionTeam"))
+
+        local attackerRespawnTime = 0
+
+        -- Check if the attacker is not the world
+        if attacker ~= 1022 then      
+            attackerRespawnTime = calculateReinfTime(et.gentity_get(target, "sess.sessionTeam"))        
+        end
+        
         table_insert(obituaries, {
             timestamp = trap_Milliseconds(),
             target = clientGuids[target].guid,
             attacker = clientGuids[attacker].guid,
             meansOfDeath = meansOfDeath,
-            attacker_lastSpawnTime = gentity_get(attacker, "pers.lastSpawnTime"),
-            target_lastSpawnTime = gentity_get(target, "pers.lastSpawnTime")
+            attackerRespawnTime = attackerRespawnTime,
+            victimRespawnTime = victimRespawnTime
         })
     end
 
@@ -1878,13 +1936,16 @@ function SaveStats()
     log("SaveStats completed")
 end
 
-function et_RunFrame(levelTime)
+function et_RunFrame(gameFrameLevelTime)
     local gamestate = tonumber(et.trap_Cvar_Get("gamestate"))
 
+    -- Store level time for spawn time calculations
+    levelTime = gameFrameLevelTime
+    
     -- store stats in case player leaves prematurely
-    if levelTime >= nextStoreTime then
+    if gameFrameLevelTime >= nextStoreTime then
         StoreStats()
-        nextStoreTime = levelTime + storeTimeInterval
+        nextStoreTime = gameFrameLevelTime + storeTimeInterval
     end
 
     if gamestate == et.GS_INTERMISSION then
@@ -1892,8 +1953,8 @@ function et_RunFrame(levelTime)
             log("Entering intermission")
             intermission = true
             StoreStats()
-            scheduledSaveTime = levelTime + saveStatsDelay
-        elseif levelTime >= scheduledSaveTime and scheduledSaveTime > 0 and not saveStatsState.inProgress then
+            scheduledSaveTime = gameFrameLevelTime + saveStatsDelay
+        elseif gameFrameLevelTime >= scheduledSaveTime and scheduledSaveTime > 0 and not saveStatsState.inProgress then
             SaveStats()
         end
     else
@@ -1950,6 +2011,9 @@ end
 
 function et_InitGame()
     et.RegisterModname(string.format("%s %s", modname, version))
+
+    -- Parse reinforcement times
+    parseReinforcementTimes()
 
     -- Validate configuration
     local config_valid, error_message = validateConfiguration()
