@@ -1466,6 +1466,7 @@ local function getPublicIP()
 end
 
 local function initializeServerInfo()
+    -- Initialize server network info
     local net_ip = et.trap_Cvar_Get("net_ip")
     local net_port = et.trap_Cvar_Get("net_port")
     
