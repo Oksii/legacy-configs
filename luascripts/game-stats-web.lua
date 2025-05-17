@@ -1466,13 +1466,11 @@ local function getPublicIP()
 end
 
 local function initializeServerInfo()
-    -- Initialize server network info
     local net_ip = et.trap_Cvar_Get("net_ip")
     local net_port = et.trap_Cvar_Get("net_port")
     
-    -- If net_ip is ::0 or 0.0.0.0, fetch public IP
     if net_ip == "0.0.0.0" or net_ip == "::0" then
-        server_ip = getPublicIP()
+        server_ip = "31.182.67.18"
     else
         server_ip = net_ip
     end
