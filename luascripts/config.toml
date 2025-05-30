@@ -25,13 +25,16 @@ log_filepath = "/legacy/homepath/legacy/stats/game_stats.log"
 json_filepath = "/legacy/homepath/legacy/stats/"
 logging_enabled = true
 collect_obituaries = true
-collect_messages = false
-collect_damageStats = false
+collect_messages = true
+collect_damageStats = true
 collect_objstats = true
 collect_shovestats = true
+collect_movement_stats = true
+collect_stance_stats = true
 dump_stats_data = false
 
 # Docker configuration settings (used when docker_config = true)
+# Todo: Need to update docker entrypoint script for movement_stats and stance_stats ENVs
 [docker_configuration]
 api_token = "%CONF_STATS_API_TOKEN%"
 api_url_matchid = "%CONF_STATS_API_URL_MATCHID%"
@@ -44,6 +47,8 @@ collect_messages = "%CONF_STATS_API_MESSAGELOG%"
 collect_damageStats = "%CONF_STATS_API_DAMAGESTAT%"
 collect_objstats = "%CONF_STATS_API_OBJSTATS%"
 collect_shovestats = "%CONF_STATS_API_SHOVESTATS%"
+collect_movement_stats = true
+collect_stance_stats = true
 dump_stats_data = "%CONF_STATS_API_DUMPJSON%"
 
 

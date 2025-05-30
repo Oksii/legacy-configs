@@ -129,10 +129,15 @@
 
         18-04-2025: v1.1.4 -- HeDo
             - Added spawntime tracking to obituaries
+
+        30-05-2025: v1.1.5 -- Oksii
+            - Added playerstate (crouch, prone, lean, walk, mounted) tracking
+            - Added distance travelled
+            - Added distance on spawn travelled (3s threshold)
 ]]--
 
 local modname = "game-stats-web-api"
-local version = "1.1.4"
+local version = "1.1.5"
 
 -- Required libraries
 local json = require("dkjson")
@@ -151,6 +156,8 @@ local configuration = {
     collect_objstats = false,
     collect_obituaries = false,
     collect_shovestats = false,
+    collect_movement_stats = false,
+    collect_stance_stats = false,
     dump_stats_data = false
 }
 
@@ -386,6 +393,14 @@ local scheduledSaveTime    = 0
 local storeTimeInterval    = 5000 -- how often we store players stats
 local saveStatsDelay       = 3000 -- wait for intermission screen before sending stats
 
+local playerMovementStats = {}
+local playerStanceStats = {}
+local playerSpawnTracking = {}
+local lastFrameTime = 0
+
+local SPAWN_TRACK_DURATION = 3000
+local SPAWN_DETECTION_THRESHOLD = 50
+
 -- local constants
 local CON_CONNECTED        = 2
 local WS_KNIFE             = 0
@@ -415,6 +430,14 @@ local CLASS_LOOKUP = {
     [3] = "fieldop",
     [4] = "covertops"
 }
+
+-- state flags
+local EF_DEAD             = 0x00000001
+local EF_CROUCHING        = 0x00000010
+local EF_MG42_ACTIVE      = 0x00000020
+local EF_MOUNTEDTANK      = 0x00008000
+local EF_PRONE            = 0x00080000
+local EF_PRONE_MOVING     = 0x00100000
 
 -- Constants and variables for spawn time tracking
 local MAX_REINFSEEDS = 8
@@ -473,6 +496,25 @@ function ConvertTimelimit(timelimit)
 	return string.format("%i:%i%i", mins, tens, seconds)
 end
 
+local function calculateDistance3D(pos1, pos2)
+    if not pos1 or not pos2 then return 0 end
+    
+    local ax, ay, az = pos1[1], pos1[2], pos1[3]
+    local bx, by, bz = pos2[1], pos2[2], pos2[3]
+    local dx = math.abs(bx - ax)
+    local dy = math.abs(by - ay)
+    local dz = math.abs(bz - az)
+    local distance_units = math.sqrt((dx ^ 2) + (dy ^ 2) + (dz ^ 2))
+    
+    -- Convert game units to meters (1 meter ≈ 39.37 game units)
+    return distance_units / 39.37
+end
+
+local function calculateVelocityMagnitude(velocity)
+    if not velocity then return 0 end
+    return math.sqrt(velocity[1]*velocity[1] + velocity[2]*velocity[2] + velocity[3]*velocity[3])
+end
+
 -- Fetch and add GUID+team to cache
 local clientGuids = setmetatable({}, {
     __index = function(t, clientNum)
@@ -501,8 +543,162 @@ local clientGuids = setmetatable({}, {
 -- Remove GUIDs from cache on disconnect
 function et_ClientDisconnect(clientNum)
     local guid = clientGuids[clientNum]
+    if guid and guid.guid ~= "WORLD" then
+        playerMovementStats[guid.guid] = nil
+        playerStanceStats[guid.guid] = nil
+    end
     clientGuids[clientNum] = nil
 end
+
+local function initializePlayerTracking(clientNum)
+    local guid = clientGuids[clientNum]
+    if not guid or guid.guid == "WORLD" then return end
+
+    local team = guid.team or tonumber(et.gentity_get(clientNum, "sess.sessionTeam")) or 0
+    if team ~= et.TEAM_AXIS and team ~= et.TEAM_ALLIES then 
+        return
+    end
+    
+    if not playerMovementStats[guid.guid] then
+        playerMovementStats[guid.guid] = {
+            distance_travelled = 0,
+            last_position = nil,
+            distance_travelled_spawn = 0
+        }
+    end
+    
+    if not playerStanceStats[guid.guid] then
+        playerStanceStats[guid.guid] = {
+            in_prone = 0,
+            in_crouch = 0,
+            in_mg = 0,
+            in_lean = 0,
+            last_stance_check = 0
+        }
+    end
+
+    if not playerSpawnTracking[guid.guid] then
+        playerSpawnTracking[guid.guid] = {
+            tracking_active = false,
+            tracking_end_time = 0,
+            spawn_position = nil,
+            distance_travelled = 0,
+            last_detected_spawn_time = 0
+        }
+    end
+end
+
+local function trackPlayerStanceAndMovement(gameFrameLevelTime)
+    local frameTime = gameFrameLevelTime - lastFrameTime
+    if frameTime <= 0 then return end
+
+    for guid, spawnTrack in pairs(playerSpawnTracking) do
+        if spawnTrack.tracking_active and gameFrameLevelTime >= spawnTrack.tracking_end_time then
+            spawnTrack.tracking_active = false
+
+            if playerMovementStats[guid] then
+                playerMovementStats[guid].distance_travelled_spawn = 
+                    playerMovementStats[guid].distance_travelled_spawn + spawnTrack.distance_travelled
+
+                log(string.format("Player %s moved %.2f meters in first 3 seconds after spawn (total: %.2f)", 
+                    guid, 
+                    spawnTrack.distance_travelled, 
+                    playerMovementStats[guid].distance_travelled_spawn))
+            end
+        end
+    end
+
+    for clientNum = 0, maxClients - 1 do
+        if et.gentity_get(clientNum, "pers.connected") == CON_CONNECTED then
+            local guid = clientGuids[clientNum]
+            if guid and guid.guid ~= "WORLD" then
+                -- player is on an active team
+                local team = guid.team or tonumber(et.gentity_get(clientNum, "sess.sessionTeam")) or 0
+                if team == et.TEAM_AXIS or team == et.TEAM_ALLIES then
+                    initializePlayerTracking(clientNum)
+
+                    -- player is alive
+                    local health = tonumber(et.gentity_get(clientNum, "health")) or 0
+                    local eFlags = tonumber(et.gentity_get(clientNum, "ps.eFlags")) or 0
+                    local isDead = (eFlags & EF_DEAD) ~= 0 or health <= 0
+                    
+                    if not isDead then
+                        local lastSpawnTime = tonumber(et.gentity_get(clientNum, "pers.lastSpawnTime")) or 0
+                        local currentTime = gameFrameLevelTime
+                        local spawnTrack = playerSpawnTracking[guid.guid]
+                        
+                        if lastSpawnTime > 0 and 
+                           (currentTime - lastSpawnTime) < SPAWN_DETECTION_THRESHOLD and
+                           (not spawnTrack.last_detected_spawn_time or lastSpawnTime > spawnTrack.last_detected_spawn_time) then
+                            
+                            local currentPos = et.gentity_get(clientNum, "ps.origin")
+                            if currentPos then
+                                spawnTrack.tracking_active = true
+                                spawnTrack.tracking_end_time = currentTime + SPAWN_TRACK_DURATION
+                                spawnTrack.spawn_position = {currentPos[1], currentPos[2], currentPos[3]}
+                                spawnTrack.last_detected_spawn_time = lastSpawnTime
+                                spawnTrack.distance_travelled = 0
+                                
+                                log(string.format("Player %s spawned, tracking movement for 3 seconds", guid.guid))
+                            end
+                        end
+                        
+                        -- Track stance time
+                        local stanceStats = playerStanceStats[guid.guid]
+                        if stanceStats then
+                            local timeDelta = currentTime - (stanceStats.last_stance_check or currentTime)
+                            
+                            if timeDelta > 0 then
+                                local isProne = (eFlags & EF_PRONE_MOVING) ~= 0 or (eFlags & EF_PRONE) ~= 0
+                                local isMounted = (eFlags & EF_MG42_ACTIVE) ~= 0 or (eFlags & EF_MOUNTEDTANK) ~= 0
+                                local isCrouching = (eFlags & EF_CROUCHING) ~= 0 and not isProne and not isMounted
+
+                                -- ps.leanf is non-zero when leaning
+                                local leanf = tonumber(et.gentity_get(clientNum, "ps.leanf")) or 0
+                                local isLeaning = leanf ~= 0
+
+                                if isMounted then
+                                    stanceStats.in_mg = stanceStats.in_mg + (timeDelta / 1000)
+                                elseif isProne then
+                                    stanceStats.in_prone = stanceStats.in_prone + (timeDelta / 1000)
+                                elseif isCrouching then
+                                    stanceStats.in_crouch = stanceStats.in_crouch + (timeDelta / 1000)
+                                end
+                                
+                                -- lean (can be combined with other stances)
+                                if isLeaning then
+                                    stanceStats.in_lean = stanceStats.in_lean + (timeDelta / 1000)
+                                end
+                                
+                                stanceStats.last_stance_check = currentTime
+                            end
+                        end
+                        
+                        -- Track distance travelled
+                        local movementStats = playerMovementStats[guid.guid]
+                        if movementStats then
+                            local currentPos = et.gentity_get(clientNum, "ps.origin")
+                            
+                            if currentPos and movementStats.last_position then
+                                local distance_meters = calculateDistance3D(movementStats.last_position, currentPos)
+                                if distance_meters > 0.025 then
+                                    movementStats.distance_travelled = movementStats.distance_travelled + distance_meters
+
+                                    if spawnTrack.tracking_active then
+                                        spawnTrack.distance_travelled = spawnTrack.distance_travelled + distance_meters
+                                    end
+                                end
+                            end
+                            movementStats.last_position = currentPos and {currentPos[1], currentPos[2], currentPos[3]} or nil
+                        end
+                    end
+                end
+            end
+        end
+    end
+    lastFrameTime = gameFrameLevelTime
+end
+
 
 -- Objective tracking utilities
 local function match_any_pattern(text, patterns)
@@ -537,22 +733,18 @@ local function strip_colors(text)
 end
 
 local function resetGameState()
-    -- Clear stats tables
     damageStats = {}
     obituaries = {}
     objstats = {}
     messages = {}
     playerClassSwitches = {}
-
-    -- Clear client tracking
+    playerMovementStats = {}
+    playerStanceStats = {}
+    playerSpawnTracking = {}
     clientGuids = {}
-    
-    -- Reset objective tracking
     objective_carriers = { players = {}, ids = {} }
     objective_states = {}
     recent_announcements = {}
-
-    -- Reset timing states
     saveStatsState.inProgress = false
     scheduledSaveTime = 0
 end
@@ -1466,17 +1658,20 @@ local function getPublicIP()
 end
 
 local function initializeServerInfo()
-    -- Initialize server network info
+    local env_ip = os.getenv("MAP_IP")
     local net_ip = et.trap_Cvar_Get("net_ip")
     local net_port = et.trap_Cvar_Get("net_port")
-    
-    -- If net_ip is ::0 or 0.0.0.0, fetch public IP
-    if net_ip == "0.0.0.0" or net_ip == "::0" then
-        server_ip = getPublicIP()
-    else
+
+    if env_ip and env_ip ~= "" then
+        server_ip = env_ip
+    elseif net_ip and net_ip ~= "" and net_ip ~= "0.0.0.0" and net_ip ~= "::0" then
         server_ip = net_ip
+    else
+        server_ip = getPublicIP()
     end
+
     server_port = net_port
+
 
     -- Initialize map info
     local full_mapname = et.trap_Cvar_Get("mapname")
@@ -1848,6 +2043,23 @@ function SaveStats()
             weaponStats = weaponStats_arr
         }
 
+        -- Add movement and stance stats
+        if playerMovementStats[guid] then
+            stats_json[guid].distance_travelled_meters = math.floor(playerMovementStats[guid].distance_travelled * 10) / 10
+            if playerMovementStats[guid].distance_travelled_spawn > 0 then
+                stats_json[guid].distance_travelled_spawn = math.floor(playerMovementStats[guid].distance_travelled_spawn * 10) / 10
+            end
+        end
+
+        if playerStanceStats[guid] then
+            stats_json[guid].stance_stats = {
+                in_prone = math.floor(playerStanceStats[guid].in_prone),
+                in_crouch = math.floor(playerStanceStats[guid].in_crouch),
+                in_mg = math.floor(playerStanceStats[guid].in_mg),
+                in_lean = math.floor(playerStanceStats[guid].in_lean),
+            }
+        end
+
         -- Add objective stats
         if configuration.collect_objstats and objstats[guid] then
             for stat_type, stat_data in pairs(objstats[guid]) do
@@ -1939,8 +2151,8 @@ end
 function et_RunFrame(gameFrameLevelTime)
     local gamestate = tonumber(et.trap_Cvar_Get("gamestate"))
 
-    -- Store level time for spawn time calculations
     levelTime = gameFrameLevelTime
+    trackPlayerStanceAndMovement(gameFrameLevelTime)
     
     -- store stats in case player leaves prematurely
     if gameFrameLevelTime >= nextStoreTime then
@@ -2035,10 +2247,14 @@ function et_InitGame()
                 if guid and guid ~= "" then
                     clientGuids[clientNum] = { guid = guid, team = sessionTeam }
                     log(string.format("Initialized client %d - GUID: %s, Team: %d", clientNum, guid, sessionTeam))
+                    initializePlayerTracking(clientNum)
                 end
             end
         end
     end
+    
+    -- Set initial frame time
+    lastFrameTime = et.trap_Milliseconds()
     
     log(string.rep("-", 50))
     log(string.format("%s v%s initialized %s", modname, version, init_success and "successfully" or "with warnings"))
