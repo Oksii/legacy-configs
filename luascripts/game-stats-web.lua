@@ -664,7 +664,7 @@ local function trackPlayerStanceAndMovement(gameFrameLevelTime)
                         if lastSpawnTime > 0 and 
                         (currentTime - lastSpawnTime) < SPAWN_DETECTION_THRESHOLD and
                         (not spawnTrack.last_detected_spawn_time or lastSpawnTime > spawnTrack.last_detected_spawn_time) then
-
+                            
                             local currentPos = et.gentity_get(clientNum, "ps.origin")
                             if currentPos then
                                 spawnTrack.tracking_active = true
@@ -672,10 +672,10 @@ local function trackPlayerStanceAndMovement(gameFrameLevelTime)
                                 spawnTrack.spawn_position = {currentPos[1], currentPos[2], currentPos[3]}
                                 spawnTrack.last_detected_spawn_time = lastSpawnTime
                                 spawnTrack.distance_travelled = 0
-                                movementStats.spawn_count = (movementStats.spawn_count or 0) + 1
+                                playerMovementStats[guid.guid].spawn_count = (playerMovementStats[guid.guid].spawn_count or 0) + 1
 
                                 log(string.format("Player %s spawned, tracking movement for 3 seconds (spawn #%d)", 
-                                    guid.guid, movementStats.spawn_count))
+                                    guid.guid, playerMovementStats[guid.guid].spawn_count))
                             end
                         end
 
@@ -2090,8 +2090,7 @@ function SaveStats()
 
                 if playerMovementStats[guid].spawn_count and playerMovementStats[guid].spawn_count > 0 then
                     stats_json[guid].spawn_count = playerMovementStats[guid].spawn_count
-                    stats_json[guid].average_distance_per_spawn = math.floor((playerMovementStats[guid].distance_travelled_spawn / 
-                                                                            playerMovementStats[guid].spawn_count) * 10) / 10
+                    stats_json[guid].distance_travelled_spawn_avg = math.floor((playerMovementStats[guid].distance_travelled_spawn / playerMovementStats[guid].spawn_count) * 10) / 10
                 end
             end
         end
