@@ -683,12 +683,17 @@ local function trackPlayerStanceAndMovement(gameFrameLevelTime)
                         local stanceStats = playerStanceStats[guid.guid]
                         if stanceStats then
                             local timeDelta = currentTime - (stanceStats.last_stance_check or currentTime)
-                            
+
                             if timeDelta > 0 then
+                                local isCrouching = (eFlags & EF_CROUCHING) ~= 0
                                 local isProne = (eFlags & EF_PRONE_MOVING) ~= 0 or (eFlags & EF_PRONE) ~= 0
                                 local isMounted = (eFlags & EF_MG42_ACTIVE) ~= 0 or (eFlags & EF_MOUNTEDTANK) ~= 0
-                                local isCrouching = (eFlags & EF_CROUCHING) ~= 0
-                                
+
+                                local weapon = tonumber(et.gentity_get(clientNum, "ps.weapon")) or 0
+                                if weapon == 47 or weapon == 50 then  -- WP_MOBILE_MG42_SET = 47, WP_MOBILE_BROWNING_SET = 50
+                                    isMounted = true
+                                end
+
                                 -- ps.leanf is non-zero when leaning
                                 local leanf = tonumber(et.gentity_get(clientNum, "ps.leanf")) or 0
                                 local isLeaning = leanf ~= 0
@@ -712,7 +717,7 @@ local function trackPlayerStanceAndMovement(gameFrameLevelTime)
                                 stanceStats.last_stance_check = currentTime
                             end
                         end
-                        
+
                         -- Track distance travelled
                         local movementStats = playerMovementStats[guid.guid]
                         if movementStats then
