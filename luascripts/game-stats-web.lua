@@ -134,10 +134,15 @@
             - Added playerstate (crouch, prone, lean, walk, mounted) tracking
             - Added distance travelled
             - Added distance on spawn travelled (3s threshold)
+
+        31-05-2025: v1.1.6 -- Oksii
+            - stance_stats renamed to stance_stats_seconds
+            - Added round_start and round_end timestamps to round_info
+            - Average distance_travelled_spawn by tracking amount of player spawns
 ]]--
 
 local modname = "game-stats-web-api"
-local version = "1.1.5"
+local version = "1.1.6"
 
 -- Required libraries
 local json = require("dkjson")
@@ -386,6 +391,11 @@ local announcements_buffer = 5
 local repair_buffer        = 2000
 local MAX_OBJ_DISTANCE     = 500  -- Maximum distance in game units to consider a player "near" an objective
 
+-- Round timing variables
+local round_start_time     = 0
+local round_end_time       = 0
+local current_gamestate    = -1
+
 local intermission         = false
 local saveStatsState       = { inProgress = false } -- safety check to prevent SaveStats looping
 local nextStoreTime        = 0
@@ -484,6 +494,29 @@ local log = configuration.logging_enabled and function(message)
     end
 end or function() end  -- No-op if logging disabled
 
+-- Round timing functions
+local function handle_gamestate_change(new_gamestate)
+    if new_gamestate == current_gamestate then
+        return
+    end
+    
+    local old_gamestate = current_gamestate
+    current_gamestate = new_gamestate
+    
+    -- Handle specific transitions
+    if new_gamestate == et.GS_PLAYING and old_gamestate ~= et.GS_PLAYING then
+        -- Round actually started
+        round_start_time = trap_Milliseconds()
+        log(string.format("Round started at %d", round_start_time))
+        
+    elseif new_gamestate == et.GS_INTERMISSION and old_gamestate == et.GS_PLAYING then
+        -- Round ended
+        round_end_time = trap_Milliseconds()
+        log(string.format("Round ended at %d (duration: %.1f seconds)", 
+            round_end_time, (round_end_time - round_start_time) / 1000))
+    end
+end
+
 -- Utilities
 function ConvertTimelimit(timelimit)
 	local msec    = math.floor(tonumber(timelimit) * 60000)
@@ -563,7 +596,8 @@ local function initializePlayerTracking(clientNum)
         playerMovementStats[guid.guid] = {
             distance_travelled = 0,
             last_position = nil,
-            distance_travelled_spawn = 0
+            distance_travelled_spawn = 0,
+            spawn_count = 0
         }
     end
     
@@ -628,9 +662,9 @@ local function trackPlayerStanceAndMovement(gameFrameLevelTime)
                         local spawnTrack = playerSpawnTracking[guid.guid]
                         
                         if lastSpawnTime > 0 and 
-                           (currentTime - lastSpawnTime) < SPAWN_DETECTION_THRESHOLD and
-                           (not spawnTrack.last_detected_spawn_time or lastSpawnTime > spawnTrack.last_detected_spawn_time) then
-                            
+                        (currentTime - lastSpawnTime) < SPAWN_DETECTION_THRESHOLD and
+                        (not spawnTrack.last_detected_spawn_time or lastSpawnTime > spawnTrack.last_detected_spawn_time) then
+
                             local currentPos = et.gentity_get(clientNum, "ps.origin")
                             if currentPos then
                                 spawnTrack.tracking_active = true
@@ -638,11 +672,13 @@ local function trackPlayerStanceAndMovement(gameFrameLevelTime)
                                 spawnTrack.spawn_position = {currentPos[1], currentPos[2], currentPos[3]}
                                 spawnTrack.last_detected_spawn_time = lastSpawnTime
                                 spawnTrack.distance_travelled = 0
-                                
-                                log(string.format("Player %s spawned, tracking movement for 3 seconds", guid.guid))
+                                movementStats.spawn_count = (movementStats.spawn_count or 0) + 1
+
+                                log(string.format("Player %s spawned, tracking movement for 3 seconds (spawn #%d)", 
+                                    guid.guid, movementStats.spawn_count))
                             end
                         end
-                        
+
                         -- Track stance time
                         local stanceStats = playerStanceStats[guid.guid]
                         if stanceStats then
@@ -745,6 +781,8 @@ local function resetGameState()
     objective_carriers = { players = {}, ids = {} }
     objective_states = {}
     recent_announcements = {}
+    round_start_time = 0
+    round_end_time = 0
     saveStatsState.inProgress = false
     scheduledSaveTime = 0
 end
@@ -1672,7 +1710,6 @@ local function initializeServerInfo()
 
     server_port = net_port
 
-
     -- Initialize map info
     local full_mapname = et.trap_Cvar_Get("mapname")
     local base_mapname = get_base_map_name(full_mapname)
@@ -2007,7 +2044,9 @@ function SaveStats()
         round = round,
         matchID = matchID,
         server_ip = server_ip,
-        server_port = server_port
+        server_port = server_port,
+        round_start = round_start_time,
+        round_end = round_end_time
     }
 
     if configuration.collect_obituaries then
@@ -2048,6 +2087,12 @@ function SaveStats()
             stats_json[guid].distance_travelled_meters = math.floor(playerMovementStats[guid].distance_travelled * 10) / 10
             if playerMovementStats[guid].distance_travelled_spawn > 0 then
                 stats_json[guid].distance_travelled_spawn = math.floor(playerMovementStats[guid].distance_travelled_spawn * 10) / 10
+
+                if playerMovementStats[guid].spawn_count and playerMovementStats[guid].spawn_count > 0 then
+                    stats_json[guid].spawn_count = playerMovementStats[guid].spawn_count
+                    stats_json[guid].average_distance_per_spawn = math.floor((playerMovementStats[guid].distance_travelled_spawn / 
+                                                                            playerMovementStats[guid].spawn_count) * 10) / 10
+                end
             end
         end
 
@@ -2150,6 +2195,7 @@ end
 
 function et_RunFrame(gameFrameLevelTime)
     local gamestate = tonumber(et.trap_Cvar_Get("gamestate"))
+    handle_gamestate_change(gamestate)
 
     levelTime = gameFrameLevelTime
     trackPlayerStanceAndMovement(gameFrameLevelTime)
@@ -2253,8 +2299,9 @@ function et_InitGame()
         end
     end
     
-    -- Set initial frame time
+    -- Set initial frame time and gamestate
     lastFrameTime = et.trap_Milliseconds()
+    current_gamestate = tonumber(et.trap_Cvar_Get("gamestate")) or -1
     
     log(string.rep("-", 50))
     log(string.format("%s v%s initialized %s", modname, version, init_success and "successfully" or "with warnings"))
