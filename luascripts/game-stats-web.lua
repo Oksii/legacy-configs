@@ -2052,7 +2052,7 @@ function SaveStats()
         end
 
         if playerStanceStats[guid] then
-            stats_json[guid].stance_stats = {
+            stats_json[guid].stance_stats_seconds = {
                 in_prone = math.floor(playerStanceStats[guid].in_prone),
                 in_crouch = math.floor(playerStanceStats[guid].in_crouch),
                 in_mg = math.floor(playerStanceStats[guid].in_mg),
