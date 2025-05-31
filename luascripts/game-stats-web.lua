@@ -687,25 +687,28 @@ local function trackPlayerStanceAndMovement(gameFrameLevelTime)
                             if timeDelta > 0 then
                                 local isProne = (eFlags & EF_PRONE_MOVING) ~= 0 or (eFlags & EF_PRONE) ~= 0
                                 local isMounted = (eFlags & EF_MG42_ACTIVE) ~= 0 or (eFlags & EF_MOUNTEDTANK) ~= 0
-                                local isCrouching = (eFlags & EF_CROUCHING) ~= 0 and not isProne and not isMounted
-
+                                local isCrouching = (eFlags & EF_CROUCHING) ~= 0
+                                
                                 -- ps.leanf is non-zero when leaning
                                 local leanf = tonumber(et.gentity_get(clientNum, "ps.leanf")) or 0
                                 local isLeaning = leanf ~= 0
 
+                                if isProne then
+                                    stanceStats.in_prone = stanceStats.in_prone + (timeDelta / 1000)
+                                end
+
                                 if isMounted then
                                     stanceStats.in_mg = stanceStats.in_mg + (timeDelta / 1000)
-                                elseif isProne then
-                                    stanceStats.in_prone = stanceStats.in_prone + (timeDelta / 1000)
-                                elseif isCrouching then
+                                end
+
+                                if isCrouching and not isProne and not isMounted then
                                     stanceStats.in_crouch = stanceStats.in_crouch + (timeDelta / 1000)
                                 end
-                                
-                                -- lean (can be combined with other stances)
-                                if isLeaning then
+
+                                if isLeaning and not isProne and not isMounted then
                                     stanceStats.in_lean = stanceStats.in_lean + (timeDelta / 1000)
                                 end
-                                
+
                                 stanceStats.last_stance_check = currentTime
                             end
                         end
