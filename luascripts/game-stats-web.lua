@@ -139,10 +139,15 @@
             - stance_stats renamed to stance_stats_seconds
             - Added round_start and round_end timestamps to round_info
             - Average distance_travelled_spawn by tracking amount of player spawns
+        
+        02-05-2025: v1.1.7 -- Oksii
+            - Added in_objcarrier, in_vehicleescort, in_disguise, in_sprint, in_turtle, in_downed stance states
+            - Added player speed tracking
+            - Fixed world crush event in obituaries
 ]]--
 
 local modname = "game-stats-web-api"
-local version = "1.1.6"
+local version = "1.1.7"
 
 -- Required libraries
 local json = require("dkjson")
@@ -448,6 +453,19 @@ local EF_MG42_ACTIVE      = 0x00000020
 local EF_MOUNTEDTANK      = 0x00008000
 local EF_PRONE            = 0x00080000
 local EF_PRONE_MOVING     = 0x00100000
+local EF_TAGCONNECT       = 0x00008000
+local STAT_SPRINTTIME     = 8
+local PW_REDFLAG          = 5
+local PW_BLUEFLAG         = 6
+local PW_OPS_DISGUISED    = 7
+local BODY_DOWNED         = 67108864
+
+local SPEED_US_TO_KPH = 15.58
+local SPEED_US_TO_MPH = 23.44
+local SPEED_US_TO_BANANA = 87.53
+
+local MAX_SPRINT_TIME     = 20000       -- Maximum sprint stamina
+local LOW_STAMINA_THRESHOLD = 100       -- Consider "turtle" when at or below this (nearly empty)
 
 -- Constants and variables for spawn time tracking
 local MAX_REINFSEEDS = 8
@@ -597,7 +615,11 @@ local function initializePlayerTracking(clientNum)
             distance_travelled = 0,
             last_position = nil,
             distance_travelled_spawn = 0,
-            spawn_count = 0
+            spawn_count = 0,
+            speed_samples = {},
+            peak_speed_ups = 0,
+            total_speed_samples = 0,
+            total_speed_sum = 0
         }
     end
     
@@ -607,7 +629,14 @@ local function initializePlayerTracking(clientNum)
             in_crouch = 0,
             in_mg = 0,
             in_lean = 0,
-            last_stance_check = 0
+            in_objcarrier = 0,      
+            in_vehiclescort = 0,    
+            in_disguise = 0,        
+            in_sprint = 0,          
+            in_turtle = 0,          
+            is_downed = 0,
+            last_stance_check = 0,
+            last_sprint_time = MAX_SPRINT_TIME
         }
     end
 
@@ -651,44 +680,48 @@ local function trackPlayerStanceAndMovement(gameFrameLevelTime)
                 if team == et.TEAM_AXIS or team == et.TEAM_ALLIES then
                     initializePlayerTracking(clientNum)
 
-                    -- player is alive
                     local health = tonumber(et.gentity_get(clientNum, "health")) or 0
                     local eFlags = tonumber(et.gentity_get(clientNum, "ps.eFlags")) or 0
-                    local isDead = (eFlags & EF_DEAD) ~= 0 or health <= 0
-                    
-                    if not isDead then
-                        local lastSpawnTime = tonumber(et.gentity_get(clientNum, "pers.lastSpawnTime")) or 0
+                    local body = tonumber(et.gentity_get(clientNum, "r.contents")) or 0
+
+                    local isDead = (eFlags & EF_DEAD) ~= 0
+                    local isDowned = (health < 0 and body == BODY_DOWNED)
+                    local isAlive = health > 0
+                    local isNotDowned = not isDowned
+
+                    -- Track stance stats for all players
+                    local stanceStats = playerStanceStats[guid.guid]
+                    if stanceStats then
                         local currentTime = gameFrameLevelTime
-                        local spawnTrack = playerSpawnTracking[guid.guid]
+                        local timeDelta = currentTime - (stanceStats.last_stance_check or currentTime)
                         
-                        if lastSpawnTime > 0 and 
-                        (currentTime - lastSpawnTime) < SPAWN_DETECTION_THRESHOLD and
-                        (not spawnTrack.last_detected_spawn_time or lastSpawnTime > spawnTrack.last_detected_spawn_time) then
-                            
-                            local currentPos = et.gentity_get(clientNum, "ps.origin")
-                            if currentPos then
-                                spawnTrack.tracking_active = true
-                                spawnTrack.tracking_end_time = currentTime + SPAWN_TRACK_DURATION
-                                spawnTrack.spawn_position = {currentPos[1], currentPos[2], currentPos[3]}
-                                spawnTrack.last_detected_spawn_time = lastSpawnTime
-                                spawnTrack.distance_travelled = 0
-                                playerMovementStats[guid.guid].spawn_count = (playerMovementStats[guid.guid].spawn_count or 0) + 1
+                        if isAlive and isNotDowned then
+                            local sprintTime = tonumber(et.gentity_get(clientNum, "ps.stats", 8)) or MAX_SPRINT_TIME
+                            local lastSpawnTime = tonumber(et.gentity_get(clientNum, "pers.lastSpawnTime")) or 0
+                            local spawnTrack = playerSpawnTracking[guid.guid]
 
-                                log(string.format("Player %s spawned, tracking movement for 3 seconds (spawn #%d)", 
-                                    guid.guid, playerMovementStats[guid.guid].spawn_count))
+                            if lastSpawnTime > 0 and 
+                            (currentTime - lastSpawnTime) < SPAWN_DETECTION_THRESHOLD and
+                            (not spawnTrack.last_detected_spawn_time or lastSpawnTime > spawnTrack.last_detected_spawn_time) then
+
+                                local currentPos = et.gentity_get(clientNum, "ps.origin")
+                                if currentPos then
+                                    spawnTrack.tracking_active = true
+                                    spawnTrack.tracking_end_time = currentTime + SPAWN_TRACK_DURATION
+                                    spawnTrack.spawn_position = {currentPos[1], currentPos[2], currentPos[3]}
+                                    spawnTrack.last_detected_spawn_time = lastSpawnTime
+                                    spawnTrack.distance_travelled = 0
+                                    playerMovementStats[guid.guid].spawn_count = (playerMovementStats[guid.guid].spawn_count or 0) + 1
+
+                                    log(string.format("Player %s spawned, tracking movement for 3 seconds (spawn #%d)", 
+                                        guid.guid, playerMovementStats[guid.guid].spawn_count))
+                                end
                             end
-                        end
-
-                        -- Track stance time
-                        local stanceStats = playerStanceStats[guid.guid]
-                        if stanceStats then
-                            local timeDelta = currentTime - (stanceStats.last_stance_check or currentTime)
 
                             if timeDelta > 0 then
                                 local isCrouching = (eFlags & EF_CROUCHING) ~= 0
                                 local isProne = (eFlags & EF_PRONE_MOVING) ~= 0 or (eFlags & EF_PRONE) ~= 0
                                 local isMounted = (eFlags & EF_MG42_ACTIVE) ~= 0 or (eFlags & EF_MOUNTEDTANK) ~= 0
-
                                 local weapon = tonumber(et.gentity_get(clientNum, "ps.weapon")) or 0
                                 if weapon == 47 or weapon == 50 then  -- WP_MOBILE_MG42_SET = 47, WP_MOBILE_BROWNING_SET = 50
                                     isMounted = true
@@ -697,6 +730,27 @@ local function trackPlayerStanceAndMovement(gameFrameLevelTime)
                                 -- ps.leanf is non-zero when leaning
                                 local leanf = tonumber(et.gentity_get(clientNum, "ps.leanf")) or 0
                                 local isLeaning = leanf ~= 0
+
+                                local isVehicleConnected = (eFlags & EF_TAGCONNECT) ~= 0
+
+                                local isCarryingObj = false
+                                local redFlagTime = tonumber(et.gentity_get(clientNum, "ps.powerups", PW_REDFLAG)) or 0
+                                local blueFlagTime = tonumber(et.gentity_get(clientNum, "ps.powerups", PW_BLUEFLAG)) or 0
+                                if redFlagTime > 0 or blueFlagTime > 0 then
+                                    isCarryingObj = true
+                                end
+
+                                local disguiseTime = tonumber(et.gentity_get(clientNum, "ps.powerups", PW_OPS_DISGUISED)) or 0
+                                local isDisguised = disguiseTime > 0
+
+                                local lastSprintTime = stanceStats.last_sprint_time or MAX_SPRINT_TIME
+                                local sprintDelta = lastSprintTime - sprintTime
+                                local STAMINA_CHANGE_THRESHOLD = 50
+
+                                local isSprinting = sprintDelta > STAMINA_CHANGE_THRESHOLD
+                                local isTurtle = (sprintTime == 0) or 
+                                                (sprintTime == MAX_SPRINT_TIME) or 
+                                                (sprintDelta < -STAMINA_CHANGE_THRESHOLD)
 
                                 if isProne then
                                     stanceStats.in_prone = stanceStats.in_prone + (timeDelta / 1000)
@@ -714,26 +768,67 @@ local function trackPlayerStanceAndMovement(gameFrameLevelTime)
                                     stanceStats.in_lean = stanceStats.in_lean + (timeDelta / 1000)
                                 end
 
+                                if isCarryingObj then
+                                    stanceStats.in_objcarrier = stanceStats.in_objcarrier + (timeDelta / 1000)
+                                end
+
+                                if isVehicleConnected then
+                                    stanceStats.in_vehiclescort = stanceStats.in_vehiclescort + (timeDelta / 1000)
+                                end
+
+                                if isDisguised then
+                                    stanceStats.in_disguise = stanceStats.in_disguise + (timeDelta / 1000)
+                                end
+
+                                if isSprinting then
+                                    stanceStats.in_sprint = stanceStats.in_sprint + (timeDelta / 1000)
+                                end
+
+                                if isTurtle then
+                                    stanceStats.in_turtle = stanceStats.in_turtle + (timeDelta / 1000)
+                                end
+
+                                stanceStats.last_sprint_time = sprintTime
                                 stanceStats.last_stance_check = currentTime
                             end
-                        end
 
-                        -- Track distance travelled
-                        local movementStats = playerMovementStats[guid.guid]
-                        if movementStats then
-                            local currentPos = et.gentity_get(clientNum, "ps.origin")
-                            
-                            if currentPos and movementStats.last_position then
-                                local distance_meters = calculateDistance3D(movementStats.last_position, currentPos)
-                                if distance_meters > 0.025 then
-                                    movementStats.distance_travelled = movementStats.distance_travelled + distance_meters
+                            -- Track distance travelled and speed
+                            local movementStats = playerMovementStats[guid.guid]
+                            if movementStats then
+                                local currentPos = et.gentity_get(clientNum, "ps.origin")
+                                local velocity = et.gentity_get(clientNum, "ps.velocity")
+                                
+                                if velocity then
+                                    local speed_ups = math.sqrt(velocity[1]*velocity[1] + velocity[2]*velocity[2] + velocity[3]*velocity[3])
 
-                                    if spawnTrack.tracking_active then
-                                        spawnTrack.distance_travelled = spawnTrack.distance_travelled + distance_meters
+                                    if speed_ups > movementStats.peak_speed_ups then
+                                        movementStats.peak_speed_ups = speed_ups
+                                    end
+                                    
+                                    if speed_ups > 10 then
+                                        movementStats.total_speed_samples = movementStats.total_speed_samples + 1
+                                        movementStats.total_speed_sum = movementStats.total_speed_sum + speed_ups
                                     end
                                 end
+
+                                if currentPos and movementStats.last_position then
+                                    local distance_meters = calculateDistance3D(movementStats.last_position, currentPos)
+                                    if distance_meters > 0.025 then
+                                        movementStats.distance_travelled = movementStats.distance_travelled + distance_meters
+
+                                        if spawnTrack.tracking_active then
+                                            spawnTrack.distance_travelled = spawnTrack.distance_travelled + distance_meters
+                                        end
+                                    end
+                                end
+                                movementStats.last_position = currentPos and {currentPos[1], currentPos[2], currentPos[3]} or nil
                             end
-                            movementStats.last_position = currentPos and {currentPos[1], currentPos[2], currentPos[3]} or nil
+
+                        elseif isDowned then
+                            if timeDelta > 0 then
+                                stanceStats.is_downed = stanceStats.is_downed + (timeDelta / 1000)
+                                stanceStats.last_stance_check = currentTime
+                            end
                         end
                     end
                 end
@@ -742,7 +837,6 @@ local function trackPlayerStanceAndMovement(gameFrameLevelTime)
     end
     lastFrameTime = gameFrameLevelTime
 end
-
 
 -- Objective tracking utilities
 local function match_any_pattern(text, patterns)
@@ -1845,16 +1939,18 @@ end
 -- Capture obituaries
 function et_Obituary(target, attacker, meansOfDeath)
     if configuration.collect_obituaries then
-
-        local victimRespawnTime = calculateReinfTime(et.gentity_get(attacker, "sess.sessionTeam"))
-
+        local victimRespawnTime = 0
         local attackerRespawnTime = 0
 
-        -- Check if the attacker is not the world
-        if attacker ~= 1022 then      
+        -- Only get respawn time for valid players
+        if attacker ~= 1022 and attacker >= 0 and attacker < maxClients then      
+            victimRespawnTime = calculateReinfTime(et.gentity_get(attacker, "sess.sessionTeam"))
+        end
+
+        if target >= 0 and target < maxClients then
             attackerRespawnTime = calculateReinfTime(et.gentity_get(target, "sess.sessionTeam"))        
         end
-        
+
         table_insert(obituaries, {
             timestamp = trap_Milliseconds(),
             target = clientGuids[target].guid,
@@ -2101,6 +2197,20 @@ function SaveStats()
                     stats_json[guid].distance_travelled_spawn_avg = math.floor((playerMovementStats[guid].distance_travelled_spawn / playerMovementStats[guid].spawn_count) * 10) / 10
                 end
             end
+
+            if playerMovementStats[guid].total_speed_samples > 0 then
+                local avg_speed_ups = playerMovementStats[guid].total_speed_sum / playerMovementStats[guid].total_speed_samples
+                local peak_speed_ups = playerMovementStats[guid].peak_speed_ups
+
+                stats_json[guid].player_speed = {
+                    ups_avg = math.floor(avg_speed_ups * 10) / 10,
+                    ups_peak = math.floor(peak_speed_ups * 10) / 10,
+                    kph_avg = math.floor((avg_speed_ups / SPEED_US_TO_KPH) * 10) / 10,
+                    kph_peak = math.floor((peak_speed_ups / SPEED_US_TO_KPH) * 10) / 10,
+                    mph_avg = math.floor((avg_speed_ups / SPEED_US_TO_MPH) * 10) / 10,
+                    mph_peak = math.floor((peak_speed_ups / SPEED_US_TO_MPH) * 10) / 10
+                }
+            end
         end
 
         if playerStanceStats[guid] then
@@ -2109,6 +2219,12 @@ function SaveStats()
                 in_crouch = math.floor(playerStanceStats[guid].in_crouch),
                 in_mg = math.floor(playerStanceStats[guid].in_mg),
                 in_lean = math.floor(playerStanceStats[guid].in_lean),
+                in_objcarrier = math.floor(playerStanceStats[guid].in_objcarrier),
+                in_vehiclescort = math.floor(playerStanceStats[guid].in_vehiclescort),
+                in_disguise = math.floor(playerStanceStats[guid].in_disguise),
+                in_sprint = math.floor(playerStanceStats[guid].in_sprint),
+                in_turtle = math.floor(playerStanceStats[guid].in_turtle),
+                is_downed = math.floor(playerStanceStats[guid].is_downed),
             }
         end
 
