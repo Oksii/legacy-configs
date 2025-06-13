@@ -32,7 +32,7 @@ collect_shovestats = true
 collect_movement_stats = true
 collect_stance_stats = true
 bobika_mapscripts = false
-force_name = true
+force_name = false
 dump_stats_data = false
 
 
