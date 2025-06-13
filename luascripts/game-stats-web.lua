@@ -454,6 +454,17 @@ local lastFrameTime = 0
 local SPAWN_TRACK_DURATION = 3000
 local SPAWN_DETECTION_THRESHOLD = 50
 
+local team_names_cache = {
+    alpha_teamname = nil,
+    beta_teamname = nil,
+    last_updated = 0
+}
+
+-- Rename queue
+local rename_queue = {}
+local rename_timer = 0
+local RENAME_DELAY = 100
+
 -- local constants
 local CON_CONNECTED        = 2
 local WS_KNIFE             = 0
@@ -553,8 +564,6 @@ local log = configuration.logging_enabled and function(message)
     end
 end or function() end  -- No-op if logging disabled
 
-
-
 -- Utilities
 function ConvertTimelimit(timelimit)
 	local msec    = math.floor(tonumber(timelimit) * 60000)
@@ -586,6 +595,108 @@ local function calculateVelocityMagnitude(velocity)
     return math.sqrt(velocity[1]*velocity[1] + velocity[2]*velocity[2] + velocity[3]*velocity[3])
 end
 
+local function strip_colors(text)
+    if not text then return "" end
+    return string.gsub(text, "%^%d", "")
+end
+
+local function extractTeamNameFromPlayerName(name)
+    if not name then return nil end
+    
+    local clean_name = strip_colors(name)
+    local team_part = clean_name:match("^([^%s]+)%s")
+    return team_part
+end
+
+local function hasValidTeamName(name, expected_team_name)
+    if not name or not expected_team_name then return false end
+
+    local extracted_team = extractTeamNameFromPlayerName(name)
+    if not extracted_team then return false end
+
+    return string.lower(extracted_team) == string.lower(expected_team_name)
+end
+
+local function getExpectedTeamName(clientNum)
+    local userinfo = trap_GetUserinfo(clientNum)
+    if not userinfo or userinfo == "" then
+        return nil
+    end
+
+    local guid = string.upper(Info_ValueForKey(userinfo, "cl_guid"))
+    if not guid or guid == "" then
+        return nil
+    end
+
+    if not team_data_cache then
+        return nil
+    end
+
+    if team_data_cache.alpha_team then
+        for _, player in ipairs(team_data_cache.alpha_team) do
+            if player.GUID then
+                for _, player_guid in ipairs(player.GUID) do
+                    if string.upper(player_guid) == guid then
+                        return team_names_cache.alpha_teamname
+                    end
+                end
+            end
+        end
+    end
+
+    if team_data_cache.beta_team then
+        for _, player in ipairs(team_data_cache.beta_team) do
+            if player.GUID then
+                for _, player_guid in ipairs(player.GUID) do
+                    if string.upper(player_guid) == guid then
+                        return team_names_cache.beta_teamname
+                    end
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+local function queuePlayerRename(clientNum, newName, reason)
+    table.insert(rename_queue, {
+        clientNum = clientNum,
+        newName = newName,
+        reason = reason,
+        timestamp = trap_Milliseconds()
+    })
+    
+    log(string.format("Queued rename for player %d: %s (reason: %s)", 
+        clientNum, newName, reason))
+end
+
+local function renamePlayer(clientNum, newName)
+    local clientInfo = trap_GetUserinfo(clientNum)
+    clientInfo = et.Info_SetValueForKey(clientInfo, "name", newName)
+    et.trap_SetUserinfo(clientNum, clientInfo)
+    et.ClientUserinfoChanged(clientNum)
+end
+
+local function processRenameQueue(currentTime)
+    if #rename_queue == 0 then return end
+    
+    if currentTime < rename_timer then return end
+
+    local rename_data = table.remove(rename_queue, 1)
+    if rename_data then
+        if et.gentity_get(rename_data.clientNum, "pers.connected") == CON_CONNECTED then
+            renamePlayer(rename_data.clientNum, rename_data.newName)
+            log(string.format("Processed rename: Player %d -> %s (%s)", 
+                rename_data.clientNum, rename_data.newName, rename_data.reason))
+        else
+            log(string.format("Skipped rename for disconnected player %d", rename_data.clientNum))
+        end
+
+        rename_timer = currentTime + RENAME_DELAY
+    end
+end
+
 -- Fetch and add GUID+team to cache
 local clientGuids = setmetatable({}, {
     __index = function(t, clientNum)
@@ -611,27 +722,7 @@ local clientGuids = setmetatable({}, {
     end
 })
 
-local function extractTeamIdentifier(name)
-    if not name then return nil end
-    -- Examples: "TILT ", "^iTILT ", "^iTILT^8 ", etc.
-    local team_part = name:match("^([^%s]+%s)")
-    if team_part then
-        return team_part
-    end
-    
-    return nil
-end
 
-local function hasValidTeamIdentifier(name)
-    return extractTeamIdentifier(name) ~= nil
-end
-
-local function renamePlayer(clientNum, newName)
-    local clientInfo = trap_GetUserinfo(clientNum)
-    clientInfo = et.Info_SetValueForKey(clientInfo, "name", newName)
-    et.trap_SetUserinfo(clientNum, clientInfo)
-    et.ClientUserinfoChanged(clientNum)
-end
 
 local function findPlayerNameByGuid(guid)
     if not team_data_cache then
@@ -929,11 +1020,6 @@ local function contains(tbl, element)
         end
     end
     return false
-end
-
-local function strip_colors(text)
-    if not text then return "" end
-    return string.gsub(text, "%^%d", "")
 end
 
 local function resetGameState()
@@ -1608,7 +1694,6 @@ function et_Print(text)
             local guid = clientGuids[tonumber(id)]
             local objective_name = "Unknown Repair"
             local current_time = trap_Milliseconds()
-    
             -- Check common buildables first
             for obj_name, common_config in pairs(common_buildables) do
                 if map_config.buildables[obj_name] and 
@@ -1995,6 +2080,15 @@ local function fetchMatchIDFromAPI()
     local result, err = executeCurlCommand(curl_cmd, nil, "200")
 
     if result then
+        if result.match and result.match.alpha_teamname and result.match.beta_teamname then
+            team_names_cache.alpha_teamname = result.match.alpha_teamname
+            team_names_cache.beta_teamname = result.match.beta_teamname
+            team_names_cache.last_updated = trap_Milliseconds()
+
+            log(string.format("Team names cached - Alpha: %s, Beta: %s", 
+                team_names_cache.alpha_teamname, team_names_cache.beta_teamname))
+        end
+        
         if configuration.force_names and result.match and not team_data_cache then
             team_data_cache = result.match 
             team_data_fetched = true
@@ -2027,39 +2121,49 @@ local function enforcePlayerName(clientNum)
         return
     end
 
-    -- Only rename if they fail the team tag validation
-    if not hasValidTeamIdentifier(current_name) then
+    local expected_team_name = getExpectedTeamName(clientNum)
+    if not expected_team_name then
+        log(string.format("No team name available for player %d", clientNum))
+        return
+    end
+
+    if not hasValidTeamName(current_name, expected_team_name) then
         local correct_name = findPlayerNameByGuid(guid)
         if correct_name then
-            log(string.format("Renaming player %s (GUID: %s): '%s' -> '%s'", 
+            log(string.format("Player %s (GUID: %s) needs rename: '%s' -> '%s'", 
                 clientNum, guid, current_name, correct_name))
-            renamePlayer(clientNum, correct_name)
+            queuePlayerRename(clientNum, correct_name, "missing/invalid team tag")
         else
-            log(string.format("Player %s (GUID: %s) connected but no team data found: %s", 
+            log(string.format("Player %s (GUID: %s) invalid team name but no correct name found: %s", 
                 clientNum, guid, current_name))
         end
     else
-        log(string.format("Player %s (GUID: %s) has valid team identifier, no rename needed: %s", 
+        log(string.format("Player %s (GUID: %s) has valid team name: %s", 
             clientNum, guid, current_name))
     end
 end
 
 local function validateAllPlayerNames()
-    if not configuration.force_names or not team_data_cache then
+    if not configuration.force_names then
         return
     end
 
-    log("Refreshing team data cache for validation")
+    log("Refreshing team data cache for mass validation")
     local old_cache = team_data_cache
     team_data_cache = nil
     fetchMatchIDFromAPI()
 
     if not team_data_cache and old_cache then
         team_data_cache = old_cache
-        log("Using previous team data cache for validation")
+        log("Using previous team data cache for mass validation")
     end
 
-    log("Performing validation check on all connected players")
+    if not team_names_cache.alpha_teamname or not team_names_cache.beta_teamname then
+        log("Team names not available, skipping mass validation")
+        return
+    end
+
+    log("Performing staggered mass validation check on all connected players")
 
     for clientNum = 0, maxClients - 1 do
         if et.gentity_get(clientNum, "pers.connected") == CON_CONNECTED then
@@ -2070,18 +2174,20 @@ local function validateAllPlayerNames()
                 local sessionTeam = tonumber(et.gentity_get(clientNum, "sess.sessionTeam")) or 0
 
                 if guid and guid ~= "" and current_name and (sessionTeam == 1 or sessionTeam == 2) then
-                    if not hasValidTeamIdentifier(current_name) then
+                    local expected_team_name = getExpectedTeamName(clientNum)
+                    
+                    if expected_team_name and not hasValidTeamName(current_name, expected_team_name) then
                         local correct_name = findPlayerNameByGuid(guid)
                         if correct_name then
-                            log(string.format("Validation: Player %s (GUID: %s) missing team identifier, enforcing: %s -> %s", 
-                                clientNum, guid, current_name, correct_name))
-                            renamePlayer(clientNum, correct_name)
+                            log(string.format("Mass validation: Player %s (GUID: %s) missing team name '%s', queuing rename: %s -> %s", 
+                                clientNum, guid, expected_team_name, current_name, correct_name))
+                            queuePlayerRename(clientNum, correct_name, "mass validation check")
                         else
-                            log(string.format("Validation: Player %s (GUID: %s) missing team identifier but no team data: %s", 
+                            log(string.format("Mass validation: Player %s (GUID: %s) missing team name but no correct name: %s", 
                                 clientNum, guid, current_name))
                         end
                     else
-                        log(string.format("Validation: Player %s (GUID: %s) has valid team identifier: %s", 
+                        log(string.format("Mass validation: Player %s (GUID: %s) has valid team name: %s", 
                             clientNum, guid, current_name))
                     end
                 end
@@ -2125,9 +2231,13 @@ function et_ClientConnect(clientNum, firstTime, isBot)
     return nil
 end
 
-
 function et_ClientBegin(clientNum)
-    if not configuration.force_names or not team_data_cache then
+    if not configuration.force_names then
+        return
+    end
+
+    if not team_names_cache.alpha_teamname or not team_names_cache.beta_teamname then
+        log(string.format("Team names not available for player %d validation", clientNum))
         return
     end
 
@@ -2143,15 +2253,16 @@ function et_ClientBegin(clientNum)
         return
     end
 
-    if not hasValidTeamIdentifier(current_name) then
+    local expected_team_name = getExpectedTeamName(clientNum)
+    if expected_team_name and not hasValidTeamName(current_name, expected_team_name) then
         local correct_name = findPlayerNameByGuid(guid)
         if correct_name then
-            log(string.format("Player %s (GUID: %s) renamed on connect: '%s' -> '%s'", 
+            log(string.format("Player %s (GUID: %s) connecting with invalid team name, renaming immediately: '%s' -> '%s'", 
                 clientNum, guid, current_name, correct_name))
             renamePlayer(clientNum, correct_name)
         end
     else
-        log(string.format("Player %s (GUID: %s) connected with valid team identifier: %s", 
+        log(string.format("Player %s (GUID: %s) connected with valid team name: %s", 
             clientNum, guid, current_name))
     end
 end
@@ -2542,6 +2653,8 @@ function et_RunFrame(gameFrameLevelTime)
 
     levelTime = gameFrameLevelTime
     trackPlayerStanceAndMovement(gameFrameLevelTime)
+
+    processRenameQueue(gameFrameLevelTime)
     
     -- store stats in case player leaves prematurely
     if gameFrameLevelTime >= nextStoreTime then

@@ -32,7 +32,7 @@ collect_shovestats = true
 collect_movement_stats = true
 collect_stance_stats = true
 bobika_mapscripts = false
-force_name = false
+force_names = false
 dump_stats_data = false
 
 
@@ -52,7 +52,7 @@ collect_shovestats = "%CONF_STATS_API_SHOVESTATS%"
 collect_movement_stats = "%CONF_STATS_API_MOVEMENTSTATS%"
 collect_stance_stats = "%CONF_STATS_API_STANCESTATS%"
 bobika_mapscripts = "%CONF_STATS_API_ALTMAPSCRIPTS%"
-force_name = "%CONF_STATS_API_FORCERENAME%"
+force_names = "%CONF_STATS_API_FORCERENAME%"
 dump_stats_data = "%CONF_STATS_API_DUMPJSON%"
 
 
