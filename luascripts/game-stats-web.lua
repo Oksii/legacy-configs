@@ -144,10 +144,17 @@
             - Added in_objcarrier, in_vehicleescort, in_disguise, in_sprint, in_turtle, in_downed stance states
             - Added player speed tracking
             - Fixed world crush event in obituaries
+        
+        04-05-2025: v1.1.8 -- Oksii
+            - Added config toggle to support bobika's mapscripts and regular mapscripts both
+              Will fallback to regular if no bobika configurations exist 
+        
+        13-06-2025: v1.1.9 -- Oksii
+            - Added player/team name enforcement
 ]]--
 
 local modname = "game-stats-web-api"
-local version = "1.1.7"
+local version = "1.1.9"
 
 -- Required libraries
 local json = require("dkjson")
@@ -168,7 +175,9 @@ local configuration = {
     collect_shovestats = false,
     collect_movement_stats = false,
     collect_stance_stats = false,
-    dump_stats_data = false
+    dump_stats_data = false,
+    bobika_mapscripts = false,
+    force_names = true
 }
 
 -- config.toml
@@ -250,15 +259,28 @@ local function table_count(t)
     return count
 end
 
-local function process_config(config)
+local function process_config(config, use_bobika)
     local normalized = {}
+    local maps_section
+    
+    if use_bobika then
+        maps_section = config.bobika and config.bobika.maps
+        if maps_section then
+            et.G_Print("Using bobika map configurations\n")
+        else
+            et.G_Print("No bobika maps found, falling back to regular maps\n")
+            maps_section = config.maps
+        end
+    else
+        maps_section = config.maps
+    end
 
     -- Ensure we have a maps table
-    if not config.maps then
+    if not maps_section then
         return {}
     end
     
-    for map_name, map_data in pairs(config.maps) do
+    for map_name, map_data in pairs(maps_section) do
         normalized[normalize_key(map_name)] = {
             objectives = {},
             buildables = {},
@@ -327,10 +349,24 @@ local function process_config(config)
     return normalized
 end
 
-local map_configs = {}
-local common_buildables = {}
+local function process_common_buildables(config, use_bobika)
+    local buildables_section
 
--- init config
+    if use_bobika then
+        buildables_section = config.bobika and config.bobika.common_buildables
+        if buildables_section then
+            et.G_Print("Using bobika common buildables\n")
+        else
+            et.G_Print("No bobika common buildables found, falling back to regular\n")
+            buildables_section = config.common_buildables
+        end
+    else
+        buildables_section = config.common_buildables
+    end
+
+    return buildables_section or {}
+end
+
 do
     local config_path = get_config_path()
     local config = load_config(config_path)
@@ -355,8 +391,10 @@ do
     end
 
     -- Process map configs
-    if config.maps then
-        map_configs = process_config(config)
+    local use_bobika = configuration.bobika_mapscripts
+    
+    if config.maps or (config.bobika and config.bobika.maps) then
+        map_configs = process_config(config, use_bobika)
         if table_count(map_configs) == 0 then
             et.G_Print(string.format("%s: No valid map configurations found\n", modname))
         end
@@ -364,9 +402,9 @@ do
         et.G_Print(string.format("%s: No maps section found in config\n", modname))
     end
     
-    -- Process common buildables
-    if config.common_buildables then
-        common_buildables = config.common_buildables
+    -- Process common buildables with bobika support
+    if config.common_buildables or (config.bobika and config.bobika.common_buildables) then
+        common_buildables = process_common_buildables(config, use_bobika)
         if table_count(common_buildables) == 0 then
             et.G_Print(string.format("%s: No common buildables found\n", modname))
         end
@@ -481,6 +519,9 @@ local trap_Milliseconds = et.trap_Milliseconds
 local gentity_get = et.gentity_get
 local table_insert = table.insert
 
+local team_data_cache = nil
+local team_data_fetched = false
+
 -- Logging function
 local log = configuration.logging_enabled and function(message)
     if not configuration.log_filepath or configuration.log_filepath:match("^%%.*%%$") then
@@ -512,28 +553,7 @@ local log = configuration.logging_enabled and function(message)
     end
 end or function() end  -- No-op if logging disabled
 
--- Round timing functions
-local function handle_gamestate_change(new_gamestate)
-    if new_gamestate == current_gamestate then
-        return
-    end
-    
-    local old_gamestate = current_gamestate
-    current_gamestate = new_gamestate
-    
-    -- Handle specific transitions
-    if new_gamestate == et.GS_PLAYING and old_gamestate ~= et.GS_PLAYING then
-        -- Round actually started
-        round_start_time = trap_Milliseconds()
-        log(string.format("Round started at %d", round_start_time))
-        
-    elseif new_gamestate == et.GS_INTERMISSION and old_gamestate == et.GS_PLAYING then
-        -- Round ended
-        round_end_time = trap_Milliseconds()
-        log(string.format("Round ended at %d (duration: %.1f seconds)", 
-            round_end_time, (round_end_time - round_start_time) / 1000))
-    end
-end
+
 
 -- Utilities
 function ConvertTimelimit(timelimit)
@@ -590,6 +610,52 @@ local clientGuids = setmetatable({}, {
         return { guid = "WORLD", team = 0 }
     end
 })
+
+local function extractTeamIdentifier(name)
+    if not name then return nil end
+    -- Examples: "TILT ", "^iTILT ", "^iTILT^8 ", etc.
+    local team_part = name:match("^([^%s]+%s)")
+    if team_part then
+        return team_part
+    end
+    
+    return nil
+end
+
+local function hasValidTeamIdentifier(name)
+    return extractTeamIdentifier(name) ~= nil
+end
+
+local function renamePlayer(clientNum, newName)
+    local clientInfo = trap_GetUserinfo(clientNum)
+    clientInfo = et.Info_SetValueForKey(clientInfo, "name", newName)
+    et.trap_SetUserinfo(clientNum, clientInfo)
+    et.ClientUserinfoChanged(clientNum)
+end
+
+local function findPlayerNameByGuid(guid)
+    if not team_data_cache then
+        return nil
+    end
+
+    -- Search both teams
+    for _, team_name in pairs({"alpha_team", "beta_team"}) do
+        local team = team_data_cache[team_name]
+        if team then
+            for _, player in ipairs(team) do
+                if player.GUID then
+                    for _, player_guid in ipairs(player.GUID) do
+                        if string.upper(player_guid) == string.upper(guid) then
+                            return player.name
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    return nil
+end
 
 -- Remove GUIDs from cache on disconnect
 function et_ClientDisconnect(clientNum)
@@ -1925,15 +1991,169 @@ local function fetchMatchIDFromAPI()
         configuration.api_token,
         url
     )
-    
+
     local result, err = executeCurlCommand(curl_cmd, nil, "200")
-    
-    if result and result.match_id then
-        return result.match_id
+
+    if result then
+        if configuration.force_names and result.match and not team_data_cache then
+            team_data_cache = result.match 
+            team_data_fetched = true
+            log("Team data cached from fetchMatchIDFromAPI")
+        end
+        
+        if result.match_id then
+            return result.match_id
+        end
     end
     
     log("Failed to fetch match ID from API: " .. (err or "unknown error"))
     return tostring(os.time())
+end
+
+local function enforcePlayerName(clientNum)
+    if not configuration.force_names then
+        return
+    end
+
+    local userinfo = trap_GetUserinfo(clientNum)
+    if not userinfo or userinfo == "" then
+        return
+    end
+
+    local guid = string.upper(Info_ValueForKey(userinfo, "cl_guid"))
+    local current_name = Info_ValueForKey(userinfo, "name")
+    
+    if not guid or guid == "" or not current_name then
+        return
+    end
+
+    -- Only rename if they fail the team tag validation
+    if not hasValidTeamIdentifier(current_name) then
+        local correct_name = findPlayerNameByGuid(guid)
+        if correct_name then
+            log(string.format("Renaming player %s (GUID: %s): '%s' -> '%s'", 
+                clientNum, guid, current_name, correct_name))
+            renamePlayer(clientNum, correct_name)
+        else
+            log(string.format("Player %s (GUID: %s) connected but no team data found: %s", 
+                clientNum, guid, current_name))
+        end
+    else
+        log(string.format("Player %s (GUID: %s) has valid team identifier, no rename needed: %s", 
+            clientNum, guid, current_name))
+    end
+end
+
+local function validateAllPlayerNames()
+    if not configuration.force_names or not team_data_cache then
+        return
+    end
+
+    log("Refreshing team data cache for validation")
+    local old_cache = team_data_cache
+    team_data_cache = nil
+    fetchMatchIDFromAPI()
+
+    if not team_data_cache and old_cache then
+        team_data_cache = old_cache
+        log("Using previous team data cache for validation")
+    end
+
+    log("Performing validation check on all connected players")
+
+    for clientNum = 0, maxClients - 1 do
+        if et.gentity_get(clientNum, "pers.connected") == CON_CONNECTED then
+            local userinfo = trap_GetUserinfo(clientNum)
+            if userinfo and userinfo ~= "" then
+                local guid = string.upper(Info_ValueForKey(userinfo, "cl_guid"))
+                local current_name = Info_ValueForKey(userinfo, "name")
+                local sessionTeam = tonumber(et.gentity_get(clientNum, "sess.sessionTeam")) or 0
+
+                if guid and guid ~= "" and current_name and (sessionTeam == 1 or sessionTeam == 2) then
+                    if not hasValidTeamIdentifier(current_name) then
+                        local correct_name = findPlayerNameByGuid(guid)
+                        if correct_name then
+                            log(string.format("Validation: Player %s (GUID: %s) missing team identifier, enforcing: %s -> %s", 
+                                clientNum, guid, current_name, correct_name))
+                            renamePlayer(clientNum, correct_name)
+                        else
+                            log(string.format("Validation: Player %s (GUID: %s) missing team identifier but no team data: %s", 
+                                clientNum, guid, current_name))
+                        end
+                    else
+                        log(string.format("Validation: Player %s (GUID: %s) has valid team identifier: %s", 
+                            clientNum, guid, current_name))
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function handle_gamestate_change(new_gamestate)
+    if new_gamestate == current_gamestate then
+        return
+    end
+
+    local old_gamestate = current_gamestate
+    current_gamestate = new_gamestate
+
+    if new_gamestate == et.GS_PLAYING and old_gamestate ~= et.GS_PLAYING then
+        round_start_time = trap_Milliseconds()
+        log(string.format("Round started at %d", round_start_time))
+
+        if configuration.force_names then
+            log("Game started - name enforcement disabled")
+        end
+
+    elseif new_gamestate == et.GS_INTERMISSION and old_gamestate == et.GS_PLAYING then
+        round_end_time = trap_Milliseconds()
+        log(string.format("Round ended at %d (duration: %.1f seconds)", 
+            round_end_time, (round_end_time - round_start_time) / 1000))
+
+    elseif new_gamestate == et.GS_WARMUP_COUNTDOWN and old_gamestate == et.GS_WARMUP and configuration.force_names then
+        log("Gamestate 2->1: Performing final validation check")
+        validateAllPlayerNames()
+    end
+end
+
+function et_ClientConnect(clientNum, firstTime, isBot)
+    if configuration.force_names and not team_data_fetched then
+        log(string.format("Player %d connecting, fetching team data", clientNum))
+        fetchMatchIDFromAPI()
+    end
+    return nil
+end
+
+
+function et_ClientBegin(clientNum)
+    if not configuration.force_names or not team_data_cache then
+        return
+    end
+
+    local userinfo = trap_GetUserinfo(clientNum)
+    if not userinfo or userinfo == "" then
+        return
+    end
+
+    local guid = string.upper(Info_ValueForKey(userinfo, "cl_guid"))
+    local current_name = Info_ValueForKey(userinfo, "name")
+    
+    if not guid or guid == "" or not current_name then
+        return
+    end
+
+    if not hasValidTeamIdentifier(current_name) then
+        local correct_name = findPlayerNameByGuid(guid)
+        if correct_name then
+            log(string.format("Player %s (GUID: %s) renamed on connect: '%s' -> '%s'", 
+                clientNum, guid, current_name, correct_name))
+            renamePlayer(clientNum, correct_name)
+        end
+    else
+        log(string.format("Player %s (GUID: %s) connected with valid team identifier: %s", 
+            clientNum, guid, current_name))
+    end
 end
 
 -- Capture obituaries

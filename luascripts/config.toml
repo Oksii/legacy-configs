@@ -31,10 +31,12 @@ collect_objstats = true
 collect_shovestats = true
 collect_movement_stats = true
 collect_stance_stats = true
+bobika_mapscripts = false
+force_name = true
 dump_stats_data = false
 
+
 # Docker configuration settings (used when docker_config = true)
-# Todo: Need to update docker entrypoint script for movement_stats and stance_stats ENVs
 [docker_configuration]
 api_token = "%CONF_STATS_API_TOKEN%"
 api_url_matchid = "%CONF_STATS_API_URL_MATCHID%"
@@ -47,8 +49,10 @@ collect_messages = "%CONF_STATS_API_MESSAGELOG%"
 collect_damageStats = "%CONF_STATS_API_DAMAGESTAT%"
 collect_objstats = "%CONF_STATS_API_OBJSTATS%"
 collect_shovestats = "%CONF_STATS_API_SHOVESTATS%"
-collect_movement_stats = true
-collect_stance_stats = true
+collect_movement_stats = "%CONF_STATS_API_MOVEMENTSTATS%"
+collect_stance_stats = "%CONF_STATS_API_STANCESTATS%"
+bobika_mapscripts = "%CONF_STATS_API_ALTMAPSCRIPTS%"
+force_name = "%CONF_STATS_API_FORCERENAME%"
 dump_stats_data = "%CONF_STATS_API_DUMPJSON%"
 
 
@@ -584,3 +588,172 @@ flag_pattern = "Allies have captured the Forward Bunker!"
 
 [maps.te_escape2.flags.axis_flag]
 flag_pattern = "Axis have reclaimed the Forward Bunker!"
+
+
+#####################################################
+################ bobika_mapscripts ##################
+#####################################################
+
+#####################
+# Common Buildables
+#####################
+[bobika.common_buildables.command_post.patterns]
+construct = [
+    ".*command post constructed.*charge speed increased.*",
+    ".*command post constructed.*"
+]
+destruct = [
+    ".*command post.*destroyed.*",
+    ".*destroyed.*command post.*",
+    ".*team has destroyed.*command post.*"
+]
+plant = [
+    "the.*command post",
+    "the.*cp"
+]
+
+[bobika.common_buildables.mg.patterns]
+construct = [
+    ".*mg constructed.*",
+    ".*guardtower constructed.*",
+    ".*team has built the.*mg.*",
+    ".*mg nest has been constructed.*",
+    ".*constructed the.*mg nest.*",
+    ".*constructed the guardtower.*"
+]
+destruct = [
+    ".*mg.*destroyed.*"
+]
+plant = [
+    "the mounted mg",
+    "the platform mg nest",
+    "the.*mg"
+]
+
+#############################
+# Map: bobika.SW Goldrush TE
+#############################
+[bobika.maps.sw_goldrush_te.objectives.gold_bars]
+steal_pattern = "allies stole \"the gold bars\""
+secured_pattern = "allied team is escaping with the gold"
+return_pattern = "axis returned the gold bars"
+
+[bobika.maps.sw_goldrush_te.buildables.command_post]
+enabled = true
+
+[bobika.maps.sw_goldrush_te.buildables.tank_barrier]
+construct_pattern = "tank barrier has been constructed"
+destruct_pattern = "tank barrier has been destroyed"
+plant_pattern = "tank barrier"
+
+[bobika.maps.sw_goldrush_te.buildables.truck_barrier]
+construct_pattern = "truck barrier has been constructed"
+destruct_pattern = "truck barrier has been destroyed"
+plant_pattern = "truck barrier"
+
+[bobika.maps.sw_goldrush_te.buildables.tank]
+construct_pattern = "the tank has been repaired"
+
+[bobika.maps.sw_goldrush_te.escort.tank]
+escort_pattern = "Allied team has destroyed the Bank Doors!"
+escort_coordinates = "1860 -80 -96"
+
+[bobika.maps.sw_goldrush_te.escort.truck]
+escort_pattern = "Allied team escaped with the Gold Crate!"
+escort_coordinates = "-3310 -1060 -31"
+
+#####################
+# Map: bobika.Supply
+#####################
+[bobika.maps.supply.buildables.command_post]
+enabled = true
+
+[bobika.maps.supply.buildables.forward_bunker_gate]
+destruct_pattern = "allies have blown the bunker gate"
+plant_pattern = "the forward bunker gate"
+
+[bobika.maps.supply.buildables.forward_spawn_rear_exit]
+destruct_pattern = "allies have opened up flag exit"
+plant_pattern = "the forward spawn rear exit"
+
+[bobika.maps.supply.buildables.depot_gate]
+destruct_pattern = "allies have blown the depot gate"
+plant_pattern = "the depot gate"
+
+[bobika.maps.supply.buildables.west_depot_wall]
+destruct_pattern = "allies have blown the west wall"
+plant_pattern = "the west depot wall"
+
+[bobika.maps.supply.buildables.east_depot_wall]
+destruct_pattern = "allies have blown the east wall"
+plant_pattern = "the east depot wall"
+
+[bobika.maps.supply.buildables.depot_fence]
+construct_pattern = "depot fence has been constructed"
+destruct_pattern = "depot fence has been destroyed"
+plant_pattern = "the depot fence"
+
+[bobika.maps.supply.buildables.crane_controls]
+construct_pattern = "the crane controls have been constructed"
+destruct_pattern = "the crane controls have been destroyed"
+plant_pattern = "the crane controls"
+
+[bobika.maps.supply.flags.allies_flag]
+flag_pattern = "Allies have captured the FLAG!"
+
+[bobika.maps.supply.flags.axis_flag]
+flag_pattern = "Axis have captured the FLAG!"
+
+[bobika.maps.supply.misc.crane_controls]
+misc_pattern = "Allies have activated the crane!"
+misc_coordinates = "656 -1360 372"
+
+[bobika.maps.supply.escort.truck]
+escort_pattern = "Allies have escaped with the Gold Crate!"
+escort_coordinates = "2720 1376 192"
+
+########################
+# Map: bobika.Bremen B3
+########################
+[bobika.maps.bremen_b3.objectives.keycard]
+steal_pattern = "allies stole \"the keycard\""
+secured_pattern = "allies have captured the keycard"
+return_pattern = "axis returned the keycard"
+
+[bobika.maps.bremen_b3.buildables.command_post]
+enabled = true
+
+[bobika.maps.bremen_b3.buildables.main_gate]
+destruct_pattern = "main gate"
+plant_pattern = "main gate"
+
+[bobika.maps.bremen_b3.buildables.side_door]
+destruct_pattern = "side door has been destroyed"
+plant_pattern = "side door"
+
+[bobika.maps.bremen_b3.buildables.truck_barrier_1]
+construct_pattern = "keycard truck barrier has been constructed"
+destruct_pattern = "keycard truck barrier has been destroyed"
+plant_pattern = "truck barrier #1"
+
+[bobika.maps.bremen_b3.buildables.truck_barrier_2]
+construct_pattern = "ruins truck barrier has been constructed"
+destruct_pattern = "ruins truck barrier has been destroyed"
+plant_pattern = "truck barrier #2"
+
+[bobika.maps.bremen_b3.buildables.wooden_barrier]
+construct_pattern = "the wooden barrier has been constructed"
+plant_pattern = "the wooden barrier"
+
+[bobika.maps.bremen_b3.buildables.truck]
+construct_pattern = "truck has been repaired!"
+
+[bobika.maps.bremen_b3.flags.allies_flag]
+flag_pattern = "Allies have captured the FLAG!"
+
+[bobika.maps.bremen_b3.flags.axis_flag]
+flag_pattern = "Axis have reclaimed the FLAG!"
+
+[bobika.maps.bremen_b3.escort.truck]
+escort_pattern = "Allied team has escaped"
+escort_coordinates = "-3143 -589 128"
