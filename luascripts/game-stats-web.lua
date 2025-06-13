@@ -177,7 +177,7 @@ local configuration = {
     collect_stance_stats = false,
     dump_stats_data = false,
     bobika_mapscripts = false,
-    force_names = true
+    force_names = false
 }
 
 -- config.toml
