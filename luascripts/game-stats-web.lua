@@ -151,10 +151,15 @@
         
         13-06-2025: v1.1.9 -- Oksii
             - Added player/team name enforcement
+        
+        14-06-2025: v1.2 -- Oksi
+            - Refactor curl to use async background processing
+            - Cache matchid on init/player connect to reduce processing lag 
+            - More aggressive strip_color regex
 ]]--
 
 local modname = "game-stats-web-api"
-local version = "1.1.9"
+local version = "1.2.0"
 
 -- Required libraries
 local json = require("dkjson")
@@ -417,6 +422,9 @@ end
 local server_ip
 local server_port
 
+-- MatchID cache
+local cached_match_id = nil
+
 -- local variables
 local maxClients           = 20
 local mapname              = ""
@@ -597,24 +605,140 @@ end
 
 local function strip_colors(text)
     if not text then return "" end
-    return string.gsub(text, "%^%d", "")
+    return string.gsub(text, "%^[%w]", "")
+end
+
+local function shell_escape(str)
+    return "'" .. str:gsub("'", "'\"'\"'") .. "'"
+end
+
+-- Async curl execution function
+local function executeCurlCommandAsync(curl_cmd, payload)
+    local temp_file
+    if payload then
+        temp_file = os.tmpname() .. ".json"
+        local f = io.open(temp_file, "w")
+        if not f then
+            log("Failed to create temp file for curl")
+            return false, "Failed to create temp file"
+        end
+        f:write(payload)
+        f:close()
+        
+        -- Modify curl command to read from file
+        curl_cmd = string.format('%s --data-binary @%s', curl_cmd, temp_file)
+    end
+
+    if not curl_cmd:find("--retry") then
+        curl_cmd = curl_cmd .. " -H 'Content-Type: application/json'"
+        curl_cmd = curl_cmd .. " --compressed --connect-timeout 2 --max-time 10"
+        curl_cmd = curl_cmd .. " --retry 3 --retry-delay 1 --retry-max-time 15"
+        curl_cmd = curl_cmd .. " --silent --output /dev/null"  -- Don't capture output
+    end
+    
+    -- Make it background process
+    curl_cmd = curl_cmd .. " &"
+    
+    local success = os.execute(curl_cmd)
+
+    if temp_file then
+        os.execute(string.format("sleep 15 && rm -f %s &", temp_file))
+    end
+    
+    return success == 0, success == 0 and "Request sent asynchronously" or "Failed to start async request"
+end
+
+local function executeCurlCommandSync(curl_cmd, payload, expected_code)
+    expected_code = expected_code or "2[0-9][0-9]"
+
+    -- If payload provided, handle it separately
+    local temp_file
+    if payload then
+        temp_file = os.tmpname() .. ".json"
+        local f = io.open(temp_file, "w")
+        if not f then
+            return nil, "Failed to create temp file"
+        end
+        f:write(payload)
+        f:close()
+
+        -- Modify curl command to read from file
+        curl_cmd = string.format('%s --data-binary @%s', curl_cmd, temp_file)
+    end
+
+    -- Add curl options with short timeouts
+    if not curl_cmd:find("--retry") then
+        curl_cmd = curl_cmd .. " -H 'Content-Type: application/json'"
+        curl_cmd = curl_cmd .. " --compressed --connect-timeout 1 --max-time 3"
+        curl_cmd = curl_cmd .. " --retry 2 --retry-delay 1 --retry-max-time 5"
+        curl_cmd = curl_cmd .. " --silent"
+    end
+
+    -- Execute curl command
+    local handle = io.popen(curl_cmd, 'r')
+    if not handle then
+        if temp_file then os.remove(temp_file) end
+        return nil, "Failed to create process"
+    end
+
+    local result = handle:read("*a")
+    handle:close()
+
+    -- Clean up temp file if it exists
+    if temp_file then
+        os.remove(temp_file)
+    end
+
+    -- Try to decode JSON response
+    if result and result ~= "" then
+        local success, decoded = pcall(json.decode, result)
+        if success then
+            return decoded
+        end
+        -- If JSON decode fails, return the raw result
+        return result
+    end
+    
+    return nil, "No response body"
+end
+
+local function getPublicIP()
+    local curl_cmd = 'curl -s --connect-timeout 2 --max-time 5 https://api.ipify.org?format=json'
+    local result, err = executeCurlCommandSync(curl_cmd)
+    
+    if result and result.ip then
+        return result.ip
+    end
+    
+    log("Failed to fetch public IP: " .. (err or "unknown error"))
+    return "0.0.0.0"
 end
 
 local function extractTeamNameFromPlayerName(name)
     if not name then return nil end
-    
+
     local clean_name = strip_colors(name)
+    log(string.format("DEBUG: Original name: '%s', clean name: '%s'", name, clean_name))
+
     local team_part = clean_name:match("^([^%s]+)%s")
+    log(string.format("DEBUG: Extracted team part: '%s'", team_part or "nil"))
+
     return team_part
 end
 
 local function hasValidTeamName(name, expected_team_name)
     if not name or not expected_team_name then return false end
-
+    
     local extracted_team = extractTeamNameFromPlayerName(name)
     if not extracted_team then return false end
 
-    return string.lower(extracted_team) == string.lower(expected_team_name)
+    log(string.format("DEBUG: Checking name '%s' for team '%s' - extracted: '%s'", 
+        name, expected_team_name, extracted_team or "nil"))
+
+    local result = string.lower(extracted_team) == string.lower(expected_team_name)
+    log(string.format("DEBUG: Comparison result: %s", tostring(result)))
+    
+    return result
 end
 
 local function getExpectedTeamName(clientNum)
@@ -1039,6 +1163,7 @@ local function resetGameState()
     round_end_time = 0
     saveStatsState.inProgress = false
     scheduledSaveTime = 0
+    cached_match_id = nil
 end
 
 local function get_base_map_name(full_mapname)
@@ -1882,72 +2007,6 @@ local function SaveStatsToFile(payload, file_path)
     return true
 end
 
-local function executeCurlCommand(curl_cmd, payload, expected_code)
-    expected_code = expected_code or "2[0-9][0-9]"
-    
-    -- If payload provided, handle it separately
-    local temp_file
-    if payload then
-        temp_file = os.tmpname() .. ".json"
-        local f = io.open(temp_file, "w")
-        if not f then
-            return nil, "Failed to create temp file"
-        end
-        f:write(payload)
-        f:close()
-        
-        -- Modify curl command to read from file
-        curl_cmd = string.format('%s --data-binary @%s', curl_cmd, temp_file)
-    end
-
-    -- Add curl options
-    if not curl_cmd:find("--retry") then
-        curl_cmd = curl_cmd .. " -H 'Content-Type: application/json'"
-        curl_cmd = curl_cmd .. " --compressed --max-time 30"
-        curl_cmd = curl_cmd .. " --retry 5 --retry-delay 1 --retry-max-time 30"
-        curl_cmd = curl_cmd .. " --silent"
-    end
-    
-    -- Execute curl command
-    local handle = io.popen(curl_cmd, 'r')
-    if not handle then
-        if temp_file then os.remove(temp_file) end
-        return nil, "Failed to create process"
-    end
-    
-    local result = handle:read("*a")
-    handle:close()
-    
-    -- Clean up temp file if it exists
-    if temp_file then
-        os.remove(temp_file)
-    end
-
-    -- Try to decode JSON response
-    if result and result ~= "" then
-        local success, decoded = pcall(json.decode, result)
-        if success then
-            return decoded
-        end
-        -- If JSON decode fails, return the raw result
-        return result
-    end
-    
-    return nil, "No response body"
-end
-
-local function getPublicIP()
-    local curl_cmd = 'curl -s https://api.ipify.org?format=json'
-    local result, err = executeCurlCommand(curl_cmd)
-    
-    if result and result.ip then
-        return result.ip
-    end
-    
-    log("Failed to fetch public IP: " .. (err or "unknown error"))
-    return "0.0.0.0"
-end
-
 local function initializeServerInfo()
     local env_ip = os.getenv("MAP_IP")
     local net_ip = et.trap_Cvar_Get("net_ip")
@@ -2077,7 +2136,7 @@ local function fetchMatchIDFromAPI()
         url
     )
 
-    local result, err = executeCurlCommand(curl_cmd, nil, "200")
+    local result, err = executeCurlCommandSync(curl_cmd, nil, "200")
 
     if result then
         if result.match and result.match.alpha_teamname and result.match.beta_teamname then
@@ -2092,7 +2151,6 @@ local function fetchMatchIDFromAPI()
         if configuration.force_names and result.match and not team_data_cache then
             team_data_cache = result.match 
             team_data_fetched = true
-            log("Team data cached from fetchMatchIDFromAPI")
         end
         
         if result.match_id then
@@ -2102,6 +2160,23 @@ local function fetchMatchIDFromAPI()
     
     log("Failed to fetch match ID from API: " .. (err or "unknown error"))
     return tostring(os.time())
+end
+
+-- Get cached match ID or fetch if needed
+local function getCachedMatchID()
+    if cached_match_id then
+        log(string.format("Using cached match ID: %s", cached_match_id))
+        return cached_match_id
+    end
+
+    log("Match ID not cached, fetching...")
+    local new_match_id = fetchMatchIDFromAPI()
+    if new_match_id then
+        cached_match_id = new_match_id
+        log(string.format("Cached new match ID: %s", cached_match_id))
+    end
+
+    return cached_match_id or tostring(os.time())
 end
 
 local function enforcePlayerName(clientNum)
@@ -2215,18 +2290,41 @@ local function handle_gamestate_change(new_gamestate)
     elseif new_gamestate == et.GS_INTERMISSION and old_gamestate == et.GS_PLAYING then
         round_end_time = trap_Milliseconds()
         log(string.format("Round ended at %d (duration: %.1f seconds)", 
-            round_end_time, (round_end_time - round_start_time) / 1000))
+            round_end_time, (round_start_time - round_start_time) / 1000))
 
-    elseif new_gamestate == et.GS_WARMUP_COUNTDOWN and old_gamestate == et.GS_WARMUP and configuration.force_names then
+    elseif new_gamestate == et.GS_WARMUP_COUNTDOWN and old_gamestate == et.GS_WARMUP then
         log("Gamestate 2->1: Performing final validation check")
-        validateAllPlayerNames()
+
+        if not cached_match_id then
+            log("Fetching match ID on gamestate change (2->1)")
+            local match_id = fetchMatchIDFromAPI()
+            if match_id then
+                cached_match_id = match_id
+                log(string.format("Match ID fetched: %s", cached_match_id))
+            else
+                log("Failed to fetch match ID on gamestate change")
+            end
+        end
+
+        if configuration.force_names then
+            validateAllPlayerNames()
+        end
     end
 end
 
 function et_ClientConnect(clientNum, firstTime, isBot)
-    if configuration.force_names and not team_data_fetched then
-        log(string.format("Player %d connecting, fetching team data", clientNum))
-        fetchMatchIDFromAPI()
+    if not cached_match_id or (configuration.force_names and not team_data_fetched) then
+        log(string.format("Player %d connecting, fetching Match ID%s", 
+            clientNum, 
+            (configuration.force_names and not team_data_fetched) and " and team data" or ""))
+        
+        local match_id = fetchMatchIDFromAPI()
+        if match_id then
+            cached_match_id = match_id
+            log(string.format("Match ID fetched: %s", cached_match_id))
+        else
+            log("Failed to fetch match ID on player connect")
+        end
     end
     return nil
 end
@@ -2461,7 +2559,7 @@ function SaveStats()
     end
     saveStatsState.inProgress = true
 
-    local matchID = fetchMatchIDFromAPI(2)
+    local matchID = getCachedMatchID()
     local mapname = Info_ValueForKey(et.trap_GetConfigstring(et.CS_SERVERINFO), "mapname")
     local round = tonumber(et.trap_Cvar_Get("g_currentRound")) == 0 and 2 or 1
 
@@ -2592,6 +2690,7 @@ function SaveStats()
     local json_str = json.encode(final_data)
     if not json_str then
         log("Error: Failed to encode JSON data")
+        saveStatsState.inProgress = false
         return
     end
 
@@ -2602,47 +2701,42 @@ function SaveStats()
         configuration.api_url_submit
     )
 
-    -- Execute with payload
-    local result, err = executeCurlCommand(curl_cmd, json_str, "201")    
+    local success, message = executeCurlCommandAsync(curl_cmd, json_str)    
 
-    if err then
-        log("Error submitting stats: " .. err)
+    if success then
+        log("Stats submission started")
     else
-        log("Stats submitted successfully")
+        log("Failed to start stats submission: " .. (message or "unknown error"))
     end
 
-    -- Dump Stats Data to local JSON file
-    if configuration.dump_stats_data or err then
+    -- Always save locally if dump_stats_data is enabled
+    if configuration.dump_stats_data then
         -- Make JSON readable
         local json_str_indented = json.encode(final_data, { indent = true })
         if not json_str_indented then
             log("Error: Failed to encode JSON data for file writing")
-            return
-        end
-        -- Build JSON file name
-        if not string.match(configuration.json_filepath, "/$") then
-            configuration.json_filepath = configuration.json_filepath .. "/"
-        end
-        local json_file = configuration.json_filepath .. string.format("gamestats-%d-%s%s-round-%d.json", 
-            matchID, 
-            os.date('%Y-%m-%d-%H%M%S-'), 
-            mapname, 
-            round
-        )
+        else
+            -- Build JSON file name
+            if not string.match(configuration.json_filepath, "/$") then
+                configuration.json_filepath = configuration.json_filepath .. "/"
+            end
+            local json_file = configuration.json_filepath .. string.format("gamestats-%s-%s%s-round-%d.json", 
+                matchID, 
+                os.date('%Y-%m-%d-%H%M%S-'), 
+                mapname, 
+                round
+            )
 
-        -- Save JSON payload to local file
-        local success, write_err = SaveStatsToFile(json_str_indented, json_file)
-        if not success then
-            log(string.format("Error writing JSON to file: %s", write_err))
+            -- Save JSON payload to local file
+            local file_success, write_err = SaveStatsToFile(json_str_indented, json_file)
+            if not file_success then
+                log(string.format("Error writing JSON to file: %s", write_err))
+            end
         end
     end
 
     -- Reset tables
     resetGameState()
-
-    if not result or not (type(result) == "table" and result.message == "Request logged successfully") then
-        log("Warning: Stats submission failed or returned unexpected response")
-    end
 
     log("SaveStats completed")
 end
@@ -2739,6 +2833,22 @@ function et_InitGame()
     -- Initialize server and map info
     local init_success = initializeServerInfo()
 
+    -- Set initial frame time and gamestate
+    lastFrameTime = et.trap_Milliseconds()
+    current_gamestate = tonumber(et.trap_Cvar_Get("gamestate")) or -1
+
+    if (current_gamestate == et.GS_WARMUP or current_gamestate == et.GS_WARMUP_COUNTDOWN) and 
+       configuration.api_url_matchid and configuration.api_token then
+        log(string.format("Gamestate %d, fetching match ID", current_gamestate))
+        local match_id = fetchMatchIDFromAPI()
+        if match_id then
+            cached_match_id = match_id
+            log(string.format("Match ID fetched: %s", cached_match_id))
+        else
+            log("Failed to fetch match ID during init")
+        end
+    end
+
     -- Initialize clientGuids cache for all connected players
     for clientNum = 0, maxClients - 1 do
         if et.gentity_get(clientNum, "pers.connected") == CON_CONNECTED then
@@ -2754,10 +2864,6 @@ function et_InitGame()
             end
         end
     end
-    
-    -- Set initial frame time and gamestate
-    lastFrameTime = et.trap_Milliseconds()
-    current_gamestate = tonumber(et.trap_Cvar_Get("gamestate")) or -1
     
     log(string.rep("-", 50))
     log(string.format("%s v%s initialized %s", modname, version, init_success and "successfully" or "with warnings"))
