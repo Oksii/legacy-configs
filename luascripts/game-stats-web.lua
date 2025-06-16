@@ -156,10 +156,15 @@
             - Refactor curl to use async background processing
             - Cache matchid on init/player connect to reduce processing lag 
             - More aggressive strip_color regex
+            - Added rename queue for connecting players to avoid config overwrites
+            - Added gamestate check in message logger to avoid intermission errors
+
+        16-06-2025: v1.2.1 -- Oksii
+            - Refactored name enforcement to use ready status check instead of connect/begin
 ]]--
 
 local modname = "game-stats-web-api"
-local version = "1.2.0"
+local version = "1.2.1"
 
 -- Required libraries
 local json = require("dkjson")
@@ -471,7 +476,8 @@ local team_names_cache = {
 -- Rename queue
 local rename_queue = {}
 local rename_timer = 0
-local RENAME_DELAY = 100
+local RENAME_DELAY = 150
+local player_ready_status = {}
 
 -- local constants
 local CON_CONNECTED        = 2
@@ -511,6 +517,7 @@ local EF_MOUNTEDTANK      = 0x00008000
 local EF_PRONE            = 0x00080000
 local EF_PRONE_MOVING     = 0x00100000
 local EF_TAGCONNECT       = 0x00008000
+local EF_READY            = 0x00000008
 local STAT_SPRINTTIME     = 8
 local PW_REDFLAG          = 5
 local PW_BLUEFLAG         = 6
@@ -610,6 +617,16 @@ end
 
 local function shell_escape(str)
     return "'" .. str:gsub("'", "'\"'\"'") .. "'"
+end
+
+local function is_player_ready(clientNum)
+    local eFlags = et.gentity_get(clientNum, "ps.eFlags")
+    if not eFlags then
+        return false
+    end
+
+    -- Check if EF_READY flag is set (bit 3 = 0x00000008)
+    return (eFlags & EF_READY) ~= 0
 end
 
 -- Async curl execution function
@@ -880,6 +897,119 @@ function et_ClientDisconnect(clientNum)
         playerStanceStats[guid.guid] = nil
     end
     clientGuids[clientNum] = nil
+    player_ready_status[clientNum] = nil
+end
+
+local function enforcePlayerName(clientNum)
+    if not configuration.force_names then
+        return
+    end
+
+    local userinfo = trap_GetUserinfo(clientNum)
+    if not userinfo or userinfo == "" then
+        return
+    end
+
+    local guid = string.upper(Info_ValueForKey(userinfo, "cl_guid"))
+    local current_name = Info_ValueForKey(userinfo, "name")
+    
+    if not guid or guid == "" or not current_name then
+        return
+    end
+
+    local expected_team_name = getExpectedTeamName(clientNum)
+    if not expected_team_name then
+        log(string.format("No team name available for player %d", clientNum))
+        return
+    end
+
+    if not hasValidTeamName(current_name, expected_team_name) then
+        local correct_name = findPlayerNameByGuid(guid)
+        if correct_name then
+            log(string.format("Player %s (GUID: %s) needs rename: '%s' -> '%s'", 
+                clientNum, guid, current_name, correct_name))
+            queuePlayerRename(clientNum, correct_name, "missing/invalid team tag")
+        else
+            log(string.format("Player %s (GUID: %s) invalid team name but no correct name found: %s", 
+                clientNum, guid, current_name))
+        end
+    else
+        log(string.format("Player %s (GUID: %s) has valid team name: %s", 
+            clientNum, guid, current_name))
+    end
+end
+
+local function validateAllPlayerNames()
+    if not configuration.force_names then
+        return
+    end
+
+    if not team_names_cache.alpha_teamname or not team_names_cache.beta_teamname then
+        log("Team names not available, skipping mass validation")
+        return
+    end
+
+    log("Performing mass validation check on all connected players")
+
+    for clientNum = 0, maxClients - 1 do
+        if et.gentity_get(clientNum, "pers.connected") == CON_CONNECTED then
+            local userinfo = trap_GetUserinfo(clientNum)
+            if userinfo and userinfo ~= "" then
+                local guid = string.upper(Info_ValueForKey(userinfo, "cl_guid"))
+                local current_name = Info_ValueForKey(userinfo, "name")
+                local sessionTeam = tonumber(et.gentity_get(clientNum, "sess.sessionTeam")) or 0
+
+                if guid and guid ~= "" and current_name and (sessionTeam == 1 or sessionTeam == 2) then
+                    local expected_team_name = getExpectedTeamName(clientNum)
+
+                    if expected_team_name and not hasValidTeamName(current_name, expected_team_name) then
+                        local correct_name = findPlayerNameByGuid(guid)
+                        if correct_name then
+                            log(string.format("Mass validation: Player %s (GUID: %s) missing team name '%s', queuing rename: %s -> %s", 
+                                clientNum, guid, expected_team_name, current_name, correct_name))
+                            queuePlayerRename(clientNum, correct_name, "mass validation check")
+                        else
+                            log(string.format("Mass validation: Player %s (GUID: %s) missing team name but no correct name found: %s", 
+                                clientNum, guid, current_name))
+                        end
+                    else
+                        log(string.format("Mass validation: Player %s (GUID: %s) has valid team name: %s", 
+                            clientNum, guid, current_name))
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function checkPlayerReadyStatus()
+    if not team_data_cache and (not team_names_cache.alpha_teamname or not team_names_cache.beta_teamname) then
+        return
+    end
+
+    for clientNum = 0, maxClients - 1 do
+        if et.gentity_get(clientNum, "pers.connected") == CON_CONNECTED then
+            local is_ready = is_player_ready(clientNum)
+            local was_ready = player_ready_status[clientNum]
+
+            if is_ready and not was_ready then
+                log(string.format("Player %d readied up, checking name enforcement", clientNum))
+
+                if not team_names_cache.alpha_teamname or not team_names_cache.beta_teamname then
+                    log("Fetching team names due to player ready")
+                    local match_id = fetchMatchIDFromAPI()
+                    if match_id and not cached_match_id then
+                        cached_match_id = match_id
+                        log(string.format("Match ID cached from ready check: %s", cached_match_id))
+                    end
+                end
+
+                enforcePlayerName(clientNum)
+            end
+
+            player_ready_status[clientNum] = is_ready
+        end
+    end
 end
 
 local function initializePlayerTracking(clientNum)
@@ -1156,6 +1286,7 @@ local function resetGameState()
     playerStanceStats = {}
     playerSpawnTracking = {}
     clientGuids = {}
+    player_ready_status = {}
     objective_carriers = { players = {}, ids = {} }
     objective_states = {}
     recent_announcements = {}
@@ -1231,33 +1362,31 @@ function et_ClientUserinfoChanged(clientNum)
     if userinfo and userinfo ~= "" then
         local guid = string.upper(Info_ValueForKey(userinfo, "cl_guid"))
         local sessionTeam = tonumber(et.gentity_get(clientNum, "sess.sessionTeam")) or 0
-        
+
         if guid and guid ~= "" then
-            local oldTeamInfo = clientGuids[clientNum]
             clientGuids[clientNum] = { guid = guid, team = sessionTeam }
-            
+
             -- check for class changes
             local playerType = tonumber(et.gentity_get(clientNum, "sess.playerType"))
-            
+
             if playerType ~= nil and (sessionTeam == 1 or sessionTeam == 2) then
                 if not playerClassSwitches[guid] then
                     playerClassSwitches[guid] = {}
                 end
-                
+
                 -- Get previous class
                 local previousClass = nil
                 if #playerClassSwitches[guid] > 0 then
                     previousClass = playerClassSwitches[guid][#playerClassSwitches[guid]].toClass
                 end
-                
-                -- Only record if class actually changed
+
                 if previousClass ~= playerType then
                     table.insert(playerClassSwitches[guid], {
                         timestamp = trap_Milliseconds(),
                         fromClass = previousClass,
                         toClass = playerType
                     })
-                    
+
                     log(string.format("Player %s switched class from %s to %s", 
                         guid, 
                         previousClass and CLASS_LOOKUP[previousClass] or "none",
@@ -2179,98 +2308,6 @@ local function getCachedMatchID()
     return cached_match_id or tostring(os.time())
 end
 
-local function enforcePlayerName(clientNum)
-    if not configuration.force_names then
-        return
-    end
-
-    local userinfo = trap_GetUserinfo(clientNum)
-    if not userinfo or userinfo == "" then
-        return
-    end
-
-    local guid = string.upper(Info_ValueForKey(userinfo, "cl_guid"))
-    local current_name = Info_ValueForKey(userinfo, "name")
-    
-    if not guid or guid == "" or not current_name then
-        return
-    end
-
-    local expected_team_name = getExpectedTeamName(clientNum)
-    if not expected_team_name then
-        log(string.format("No team name available for player %d", clientNum))
-        return
-    end
-
-    if not hasValidTeamName(current_name, expected_team_name) then
-        local correct_name = findPlayerNameByGuid(guid)
-        if correct_name then
-            log(string.format("Player %s (GUID: %s) needs rename: '%s' -> '%s'", 
-                clientNum, guid, current_name, correct_name))
-            queuePlayerRename(clientNum, correct_name, "missing/invalid team tag")
-        else
-            log(string.format("Player %s (GUID: %s) invalid team name but no correct name found: %s", 
-                clientNum, guid, current_name))
-        end
-    else
-        log(string.format("Player %s (GUID: %s) has valid team name: %s", 
-            clientNum, guid, current_name))
-    end
-end
-
-local function validateAllPlayerNames()
-    if not configuration.force_names then
-        return
-    end
-
-    log("Refreshing team data cache for mass validation")
-    local old_cache = team_data_cache
-    team_data_cache = nil
-    fetchMatchIDFromAPI()
-
-    if not team_data_cache and old_cache then
-        team_data_cache = old_cache
-        log("Using previous team data cache for mass validation")
-    end
-
-    if not team_names_cache.alpha_teamname or not team_names_cache.beta_teamname then
-        log("Team names not available, skipping mass validation")
-        return
-    end
-
-    log("Performing staggered mass validation check on all connected players")
-
-    for clientNum = 0, maxClients - 1 do
-        if et.gentity_get(clientNum, "pers.connected") == CON_CONNECTED then
-            local userinfo = trap_GetUserinfo(clientNum)
-            if userinfo and userinfo ~= "" then
-                local guid = string.upper(Info_ValueForKey(userinfo, "cl_guid"))
-                local current_name = Info_ValueForKey(userinfo, "name")
-                local sessionTeam = tonumber(et.gentity_get(clientNum, "sess.sessionTeam")) or 0
-
-                if guid and guid ~= "" and current_name and (sessionTeam == 1 or sessionTeam == 2) then
-                    local expected_team_name = getExpectedTeamName(clientNum)
-                    
-                    if expected_team_name and not hasValidTeamName(current_name, expected_team_name) then
-                        local correct_name = findPlayerNameByGuid(guid)
-                        if correct_name then
-                            log(string.format("Mass validation: Player %s (GUID: %s) missing team name '%s', queuing rename: %s -> %s", 
-                                clientNum, guid, expected_team_name, current_name, correct_name))
-                            queuePlayerRename(clientNum, correct_name, "mass validation check")
-                        else
-                            log(string.format("Mass validation: Player %s (GUID: %s) missing team name but no correct name: %s", 
-                                clientNum, guid, current_name))
-                        end
-                    else
-                        log(string.format("Mass validation: Player %s (GUID: %s) has valid team name: %s", 
-                            clientNum, guid, current_name))
-                    end
-                end
-            end
-        end
-    end
-end
-
 local function handle_gamestate_change(new_gamestate)
     if new_gamestate == current_gamestate then
         return
@@ -2329,41 +2366,6 @@ function et_ClientConnect(clientNum, firstTime, isBot)
     return nil
 end
 
-function et_ClientBegin(clientNum)
-    if not configuration.force_names then
-        return
-    end
-
-    if not team_names_cache.alpha_teamname or not team_names_cache.beta_teamname then
-        log(string.format("Team names not available for player %d validation", clientNum))
-        return
-    end
-
-    local userinfo = trap_GetUserinfo(clientNum)
-    if not userinfo or userinfo == "" then
-        return
-    end
-
-    local guid = string.upper(Info_ValueForKey(userinfo, "cl_guid"))
-    local current_name = Info_ValueForKey(userinfo, "name")
-    
-    if not guid or guid == "" or not current_name then
-        return
-    end
-
-    local expected_team_name = getExpectedTeamName(clientNum)
-    if expected_team_name and not hasValidTeamName(current_name, expected_team_name) then
-        local correct_name = findPlayerNameByGuid(guid)
-        if correct_name then
-            log(string.format("Player %s (GUID: %s) connecting with invalid team name, renaming immediately: '%s' -> '%s'", 
-                clientNum, guid, current_name, correct_name))
-            renamePlayer(clientNum, correct_name)
-        end
-    else
-        log(string.format("Player %s (GUID: %s) connected with valid team name: %s", 
-            clientNum, guid, current_name))
-    end
-end
 
 -- Capture obituaries
 function et_Obituary(target, attacker, meansOfDeath)
@@ -2417,7 +2419,10 @@ end
 -- Intercept client commands for messages
 function et_ClientCommand(clientNum, command)
     if not configuration.collect_messages then return 0 end
-    
+
+    local gamestate = tonumber(et.trap_Cvar_Get("gamestate"))
+    if not gamestate or gamestate > 2 then return 0 end
+
     local commands_to_intercept = {
         ["say"] = true,
         ["say_team"] = true,
@@ -2429,9 +2434,14 @@ function et_ClientCommand(clientNum, command)
     }
 
     if commands_to_intercept[command] then
+        local client_data = clientGuids[clientNum]
+        if not client_data or not client_data.guid then
+            return 0
+        end
+
         table_insert(messages, {
             timestamp = trap_Milliseconds(),
-            guid = clientGuids[clientNum].guid,
+            guid = client_data.guid,
             command = command,
             message = et.trap_Argv(1)
         })
@@ -2747,6 +2757,10 @@ function et_RunFrame(gameFrameLevelTime)
 
     levelTime = gameFrameLevelTime
     trackPlayerStanceAndMovement(gameFrameLevelTime)
+
+    if configuration.force_names and gamestate == et.GS_WARMUP then
+        checkPlayerReadyStatus()
+    end
 
     processRenameQueue(gameFrameLevelTime)
     
