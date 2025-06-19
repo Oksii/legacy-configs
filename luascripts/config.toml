@@ -21,6 +21,7 @@ docker_config = false
 api_token = "GameStatsWebLuaToken"
 api_url_matchid = "https://api.etl.lol/api/v2/stats/etl/match-manager"
 api_url_submit = "https://api.etl.lol/api/v2/stats/etl/matches/stats/submit"
+api_url_version = "https://api.etl.lol/api/v2/stats/etl/matches/stats/version"
 log_filepath = "/legacy/homepath/legacy/stats/game_stats.log"
 json_filepath = "/legacy/homepath/legacy/stats/"
 logging_enabled = true
@@ -34,13 +35,14 @@ collect_stance_stats = true
 bobika_mapscripts = false
 force_names = false
 dump_stats_data = false
-
+version_check = true
 
 # Docker configuration settings (used when docker_config = true)
 [docker_configuration]
 api_token = "%CONF_STATS_API_TOKEN%"
 api_url_matchid = "%CONF_STATS_API_URL_MATCHID%"
 api_url_submit = "%CONF_STATS_API_URL_SUBMIT%"
+api_url_version = "https://api.etl.lol/api/v2/stats/etl/matches/stats/version"
 log_filepath = "%CONF_STATS_API_PATH%/game_stats.log"
 json_filepath = "%CONF_STATS_API_PATH%/"
 logging_enabled = "%CONF_STATS_API_LOG%"
@@ -54,7 +56,7 @@ collect_stance_stats = "%CONF_STATS_API_STANCESTATS%"
 bobika_mapscripts = "%CONF_STATS_API_ALTMAPSCRIPTS%"
 force_names = "%CONF_STATS_API_FORCERENAME%"
 dump_stats_data = "%CONF_STATS_API_DUMPJSON%"
-
+version_check = true
 
 #####################
 # Common Buildables

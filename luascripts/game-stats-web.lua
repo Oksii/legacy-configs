@@ -152,7 +152,7 @@
         13-06-2025: v1.1.9 -- Oksii
             - Added player/team name enforcement
         
-        14-06-2025: v1.2 -- Oksi
+        14-06-2025: v1.2 -- Oksii
             - Refactor curl to use async background processing
             - Cache matchid on init/player connect to reduce processing lag 
             - More aggressive strip_color regex
@@ -161,10 +161,15 @@
 
         16-06-2025: v1.2.1 -- Oksii
             - Refactored name enforcement to use ready status check instead of connect/begin
+
+        19-06-2025: v1.2.2 -- Oksii
+            - Added version check
+            - Enforce naming policies and be stricter about renames during gameplay. 
+            - Reduced some of the logging verbosity
 ]]--
 
 local modname = "game-stats-web-api"
-local version = "1.2.1"
+local version = "1.2.2"
 
 -- Required libraries
 local json = require("dkjson")
@@ -175,6 +180,7 @@ local configuration = {
     api_token = "api_token",
     api_url_matchid = "api_url_matchid",
     api_url_submit = "api_url_submit",
+    api_url_version = "api_url_version",
     log_filepath = "log_filepath",
     json_filepath = "json_filepath",
     logging_enabled = false,
@@ -187,7 +193,8 @@ local configuration = {
     collect_stance_stats = false,
     dump_stats_data = false,
     bobika_mapscripts = false,
-    force_names = false
+    force_names = false,
+    version_check = false
 }
 
 -- config.toml
@@ -479,6 +486,10 @@ local rename_timer = 0
 local RENAME_DELAY = 150
 local player_ready_status = {}
 
+-- Name change tracking variables
+local player_names_cache = {}
+local name_enforcement_active = false
+
 -- local constants
 local CON_CONNECTED        = 2
 local WS_KNIFE             = 0
@@ -731,15 +742,49 @@ local function getPublicIP()
     return "0.0.0.0"
 end
 
+local function checkVersion()
+    if not configuration.version_check or 
+       not configuration.api_url_version or 
+       configuration.api_url_version:match("^%%.*%%$") then
+        return
+    end
+
+    local curl_cmd = string.format(
+        'curl -H "Authorization: Bearer %s" %s',
+        configuration.api_token,
+        configuration.api_url_version
+    )
+
+    log("Checking version against API...")
+
+    local result, err = executeCurlCommandSync(curl_cmd)
+    
+    if result and result.version then
+        local latest_version = result.version
+        log(string.format("Current version: %s, Latest version: %s", version, latest_version))
+        
+        if version ~= latest_version then
+            et.trap_SendServerCommand(-1, string.format(
+                "chat \"^3game-stats-web.lua^7 is outdated (^i%s^7).\"",
+                version
+            ))
+            et.trap_SendServerCommand(-1, string.format(
+                "chat \"^7Please update to the latest version (^2%s^7) ASAP.\"",
+                latest_version
+            ))
+            log(string.format("Version mismatch detected - current: %s, latest: %s", version, latest_version))
+        else
+            log("Version is up to date")
+        end
+    else
+        log("Failed to check version: " .. (err or "no version data received"))
+    end
+end
+
 local function extractTeamNameFromPlayerName(name)
     if not name then return nil end
-
     local clean_name = strip_colors(name)
-    log(string.format("DEBUG: Original name: '%s', clean name: '%s'", name, clean_name))
-
     local team_part = clean_name:match("^([^%s]+)%s")
-    log(string.format("DEBUG: Extracted team part: '%s'", team_part or "nil"))
-
     return team_part
 end
 
@@ -749,12 +794,7 @@ local function hasValidTeamName(name, expected_team_name)
     local extracted_team = extractTeamNameFromPlayerName(name)
     if not extracted_team then return false end
 
-    log(string.format("DEBUG: Checking name '%s' for team '%s' - extracted: '%s'", 
-        name, expected_team_name, extracted_team or "nil"))
-
     local result = string.lower(extracted_team) == string.lower(expected_team_name)
-    log(string.format("DEBUG: Comparison result: %s", tostring(result)))
-    
     return result
 end
 
@@ -898,6 +938,7 @@ function et_ClientDisconnect(clientNum)
     end
     clientGuids[clientNum] = nil
     player_ready_status[clientNum] = nil
+    player_names_cache[clientNum] = nil
 end
 
 local function enforcePlayerName(clientNum)
@@ -919,23 +960,16 @@ local function enforcePlayerName(clientNum)
 
     local expected_team_name = getExpectedTeamName(clientNum)
     if not expected_team_name then
-        log(string.format("No team name available for player %d", clientNum))
         return
     end
 
     if not hasValidTeamName(current_name, expected_team_name) then
         local correct_name = findPlayerNameByGuid(guid)
         if correct_name then
-            log(string.format("Player %s (GUID: %s) needs rename: '%s' -> '%s'", 
-                clientNum, guid, current_name, correct_name))
+            log(string.format("Player %s needs rename: '%s' -> '%s'", 
+                clientNum, current_name, correct_name))
             queuePlayerRename(clientNum, correct_name, "missing/invalid team tag")
-        else
-            log(string.format("Player %s (GUID: %s) invalid team name but no correct name found: %s", 
-                clientNum, guid, current_name))
         end
-    else
-        log(string.format("Player %s (GUID: %s) has valid team name: %s", 
-            clientNum, guid, current_name))
     end
 end
 
@@ -945,11 +979,11 @@ local function validateAllPlayerNames()
     end
 
     if not team_names_cache.alpha_teamname or not team_names_cache.beta_teamname then
-        log("Team names not available, skipping mass validation")
         return
     end
 
-    log("Performing mass validation check on all connected players")
+    log("Mass validation check started")
+    local renames_queued = 0
 
     for clientNum = 0, maxClients - 1 do
         if et.gentity_get(clientNum, "pers.connected") == CON_CONNECTED then
@@ -965,20 +999,17 @@ local function validateAllPlayerNames()
                     if expected_team_name and not hasValidTeamName(current_name, expected_team_name) then
                         local correct_name = findPlayerNameByGuid(guid)
                         if correct_name then
-                            log(string.format("Mass validation: Player %s (GUID: %s) missing team name '%s', queuing rename: %s -> %s", 
-                                clientNum, guid, expected_team_name, current_name, correct_name))
                             queuePlayerRename(clientNum, correct_name, "mass validation check")
-                        else
-                            log(string.format("Mass validation: Player %s (GUID: %s) missing team name but no correct name found: %s", 
-                                clientNum, guid, current_name))
+                            renames_queued = renames_queued + 1
                         end
-                    else
-                        log(string.format("Mass validation: Player %s (GUID: %s) has valid team name: %s", 
-                            clientNum, guid, current_name))
                     end
                 end
             end
         end
+    end
+    
+    if renames_queued > 0 then
+        log(string.format("Mass validation: %d renames queued", renames_queued))
     end
 end
 
@@ -1073,11 +1104,6 @@ local function trackPlayerStanceAndMovement(gameFrameLevelTime)
             if playerMovementStats[guid] then
                 playerMovementStats[guid].distance_travelled_spawn = 
                     playerMovementStats[guid].distance_travelled_spawn + spawnTrack.distance_travelled
-
-                log(string.format("Player %s moved %.2f meters in first 3 seconds after spawn (total: %.2f)", 
-                    guid, 
-                    spawnTrack.distance_travelled, 
-                    playerMovementStats[guid].distance_travelled_spawn))
             end
         end
     end
@@ -1123,9 +1149,6 @@ local function trackPlayerStanceAndMovement(gameFrameLevelTime)
                                     spawnTrack.last_detected_spawn_time = lastSpawnTime
                                     spawnTrack.distance_travelled = 0
                                     playerMovementStats[guid.guid].spawn_count = (playerMovementStats[guid.guid].spawn_count or 0) + 1
-
-                                    log(string.format("Player %s spawned, tracking movement for 3 seconds (spawn #%d)", 
-                                        guid.guid, playerMovementStats[guid.guid].spawn_count))
                                 end
                             end
 
@@ -1287,6 +1310,7 @@ local function resetGameState()
     playerSpawnTracking = {}
     clientGuids = {}
     player_ready_status = {}
+    player_names_cache = {}
     objective_carriers = { players = {}, ids = {} }
     objective_states = {}
     recent_announcements = {}
@@ -1356,15 +1380,43 @@ function calculateReinfTime(team)
     return (dwDeployTime - ((aReinfOffset[team] + levelTime - levelStartTime) % dwDeployTime)) * 0.001
 end
 
--- Track class changes with ClientUserinfoChanged
 function et_ClientUserinfoChanged(clientNum)
     local userinfo = trap_GetUserinfo(clientNum)
     if userinfo and userinfo ~= "" then
         local guid = string.upper(Info_ValueForKey(userinfo, "cl_guid"))
         local sessionTeam = tonumber(et.gentity_get(clientNum, "sess.sessionTeam")) or 0
+        local current_name = Info_ValueForKey(userinfo, "name")
 
         if guid and guid ~= "" then
             clientGuids[clientNum] = { guid = guid, team = sessionTeam }
+
+            if configuration.force_names and name_enforcement_active and 
+               (current_gamestate == et.GS_PLAYING or current_gamestate == et.GS_WARMUP_COUNTDOWN) then
+
+                local cached_name = player_names_cache[clientNum]
+
+                if cached_name and cached_name ~= current_name then
+                    log(string.format("Player %d attempted name change during active game: '%s' -> '%s'", 
+                        clientNum, cached_name, current_name))
+
+                    renamePlayer(clientNum, cached_name)
+                else
+                    if not cached_name then
+                        local expected_team_name = getExpectedTeamName(clientNum)
+                        if expected_team_name and hasValidTeamName(current_name, expected_team_name) then
+                            player_names_cache[clientNum] = current_name
+                            log(string.format("Cached validated name for player %d: %s", clientNum, current_name))
+                        else
+                            local correct_name = findPlayerNameByGuid(guid)
+                            if correct_name then
+                                renamePlayer(clientNum, correct_name)
+                                player_names_cache[clientNum] = correct_name
+                                log(string.format("Enforced and cached correct name for player %d: %s", clientNum, correct_name))
+                            end
+                        end
+                    end
+                end
+            end
 
             -- check for class changes
             local playerType = tonumber(et.gentity_get(clientNum, "sess.playerType"))
@@ -1672,34 +1724,19 @@ local function find_nearest_players(coordinates, team)
         return nil 
     end
 
-    log(string.format("Objective coordinates: %d %d %d", coord_table[1], coord_table[2], coord_table[3]))
-    
     local nearest_players = {}
     local nearest_distance = math.huge
 
-    -- Debug print all player positions
-    log("=== Player Positions ===")
     for clientNum = 0, maxClients - 1 do
         local client = clientGuids[clientNum]
         if client and client.team == team then
-            -- Check both health and body contents for alive or downed-but-not-gibbed state
             local health = tonumber(gentity_get(clientNum, "health"))
             local body = tonumber(gentity_get(clientNum, "r.contents"))
             
-            -- Player is either alive or downed but not gibbed
             if health > 0 or (health <= 0 and body == 67108864) then
-                -- Get entity position
                 local origin = gentity_get(clientNum, "r.currentOrigin")
                 if origin then
                     local distance = calculate_distance(coord_table, origin)
-                    log(string.format("Player %d (Team %d): Pos(%d, %d, %d) Distance: %.2f HP: %d Body: %d", 
-                        clientNum, team, 
-                        math.floor(origin[1]), 
-                        math.floor(origin[2]), 
-                        math.floor(origin[3]), 
-                        distance,
-                        health,
-                        body))
                 
                     if distance <= MAX_OBJ_DISTANCE then
                         if distance < nearest_distance then
@@ -1710,15 +1747,10 @@ local function find_nearest_players(coordinates, team)
                         end
                     end
                 end
-            else
-                log(string.format("Player %d (Team %d): Dead/Gibbed (HP: %s Body: %s)", 
-                    clientNum, team, tostring(health), tostring(body)))
             end
         end
     end
-    log("=====================")
 
-    -- Log results
     if #nearest_players > 1 then
         local guids = {}
         for _, clientNum in ipairs(nearest_players) do
@@ -2321,13 +2353,41 @@ local function handle_gamestate_change(new_gamestate)
         log(string.format("Round started at %d", round_start_time))
 
         if configuration.force_names then
-            log("Game started - name enforcement disabled")
+            name_enforcement_active = true
+
+            -- Initialize name cache with VALIDATED names only
+            for clientNum = 0, maxClients - 1 do
+                if et.gentity_get(clientNum, "pers.connected") == CON_CONNECTED then
+                    local userinfo = trap_GetUserinfo(clientNum)
+                    if userinfo and userinfo ~= "" then
+                        local current_name = Info_ValueForKey(userinfo, "name")
+                        local guid = string.upper(Info_ValueForKey(userinfo, "cl_guid"))
+
+                        local expected_team_name = getExpectedTeamName(clientNum)
+                        if expected_team_name and hasValidTeamName(current_name, expected_team_name) then
+                            player_names_cache[clientNum] = current_name
+                            log(string.format("Cached validated name for player %d: %s", clientNum, current_name))
+                        else
+                            local correct_name = findPlayerNameByGuid(guid)
+                            if correct_name then
+                                queuePlayerRename(clientNum, correct_name, "gamestate change validation")
+                                player_names_cache[clientNum] = correct_name
+                                log(string.format("Will enforce and cache correct name for player %d: %s", clientNum, correct_name))
+                            end
+                        end
+                    end
+                end
+            end
         end
 
     elseif new_gamestate == et.GS_INTERMISSION and old_gamestate == et.GS_PLAYING then
         round_end_time = trap_Milliseconds()
         log(string.format("Round ended at %d (duration: %.1f seconds)", 
-            round_end_time, (round_start_time - round_start_time) / 1000))
+            round_end_time, (round_end_time - round_start_time) / 1000))
+
+        if configuration.force_names then
+            name_enforcement_active = false
+        end
 
     elseif new_gamestate == et.GS_WARMUP_COUNTDOWN and old_gamestate == et.GS_WARMUP then
         log("Gamestate 2->1: Performing final validation check")
@@ -2345,6 +2405,30 @@ local function handle_gamestate_change(new_gamestate)
 
         if configuration.force_names then
             validateAllPlayerNames()
+            name_enforcement_active = true
+
+            for clientNum = 0, maxClients - 1 do
+                if et.gentity_get(clientNum, "pers.connected") == CON_CONNECTED then
+                    local userinfo = trap_GetUserinfo(clientNum)
+                    if userinfo and userinfo ~= "" then
+                        local current_name = Info_ValueForKey(userinfo, "name")
+                        local guid = string.upper(Info_ValueForKey(userinfo, "cl_guid"))
+
+                        local expected_team_name = getExpectedTeamName(clientNum)
+                        if expected_team_name and hasValidTeamName(current_name, expected_team_name) then
+                            player_names_cache[clientNum] = current_name
+                            log(string.format("Initialized validated name cache for player %d: %s", clientNum, current_name))
+                        else
+                            local correct_name = findPlayerNameByGuid(guid)
+                            if correct_name then
+                                queuePlayerRename(clientNum, correct_name, "cache initialization fallback")
+                                player_names_cache[clientNum] = correct_name
+                                log(string.format("Fallback: enforcing and caching correct name for player %d: %s", clientNum, correct_name))
+                            end
+                        end
+                    end
+                end
+            end
         end
     end
 end
@@ -2763,7 +2847,7 @@ function et_RunFrame(gameFrameLevelTime)
     end
 
     processRenameQueue(gameFrameLevelTime)
-    
+
     -- store stats in case player leaves prematurely
     if gameFrameLevelTime >= nextStoreTime then
         StoreStats()
@@ -2811,7 +2895,16 @@ local function validateConfiguration()
         log("Configuration error: Invalid submit API URL")
         return false, "Invalid submit API URL"
     end
-    
+
+    if configuration.version_check then
+        if not configuration.api_url_version or 
+           not configuration.api_url_version:match("^https?://") or 
+           configuration.api_url_version:match("^%%.*%%$") then
+            log("Configuration error: Invalid version API URL")
+            return false, "Invalid version API URL"
+        end
+    end
+
     -- Check map configuration
     if not map_configs then
         log("Configuration error: map_configs is nil")
@@ -2851,6 +2944,10 @@ function et_InitGame()
     lastFrameTime = et.trap_Milliseconds()
     current_gamestate = tonumber(et.trap_Cvar_Get("gamestate")) or -1
 
+    if current_gamestate == et.GS_WARMUP and configuration.version_check then
+        checkVersion()
+    end
+
     if (current_gamestate == et.GS_WARMUP or current_gamestate == et.GS_WARMUP_COUNTDOWN) and 
        configuration.api_url_matchid and configuration.api_token then
         log(string.format("Gamestate %d, fetching match ID", current_gamestate))
@@ -2870,15 +2967,17 @@ function et_InitGame()
             if userinfo and userinfo ~= "" then
                 local guid = string.upper(Info_ValueForKey(userinfo, "cl_guid"))
                 local sessionTeam = tonumber(et.gentity_get(clientNum, "sess.sessionTeam")) or 0
+                local current_name = Info_ValueForKey(userinfo, "name")
                 if guid and guid ~= "" then
                     clientGuids[clientNum] = { guid = guid, team = sessionTeam }
-                    log(string.format("Initialized client %d - GUID: %s, Team: %d", clientNum, guid, sessionTeam))
+                    player_names_cache[clientNum] = current_name
+                    log(string.format("Initialized client %d - GUID: %s, Team: %d, Name: %s", clientNum, guid, sessionTeam, current_name))
                     initializePlayerTracking(clientNum)
                 end
             end
         end
     end
-    
+
     log(string.rep("-", 50))
     log(string.format("%s v%s initialized %s", modname, version, init_success and "successfully" or "with warnings"))
 end
