@@ -929,23 +929,13 @@ local function wipeTeamDataFile()
     end
 end
 
-local function extractTeamNameFromPlayerName(name)
-    if not name then return nil end
-    local clean_name = strip_colors(name)
-    local team_part = clean_name:match("^([^%s]+)%s")
-    return team_part
-end
-
 local function hasValidTeamName(name, expected_team_name)
     if not name or not expected_team_name then return false end
-    
-    local extracted_team = extractTeamNameFromPlayerName(name)
-    if not extracted_team then return false end
 
-    local clean_expected = strip_colors(expected_team_name)
-    local clean_extracted = strip_colors(extracted_team)
-    
-    return string.lower(clean_extracted) == string.lower(clean_expected)
+    local clean_name = strip_colors(name):lower()
+    local clean_expected = strip_colors(expected_team_name):lower()
+
+    return clean_name:sub(1, #clean_expected) == clean_expected
 end
 
 local function getExpectedTeamName(clientNum)
