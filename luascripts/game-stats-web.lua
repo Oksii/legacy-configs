@@ -827,9 +827,10 @@ local function saveTeamDataToFile()
     end
 
     local team_data_json = {
+        match_id = cached_match_id,
         alpha_teamname = team_names_cache.alpha_teamname,
         beta_teamname = team_names_cache.beta_teamname,
-        match_data = team_data_cache,
+        match = team_data_cache,
         last_updated = trap_Milliseconds()
     }
 
@@ -850,7 +851,10 @@ local function saveTeamDataToFile()
     end)
 
     if success then
-        log(string.format("Team data saved to: %s", file_path))
+        log(string.format("Team data saved - Match ID: %s, Alpha: %s, Beta: %s", 
+            cached_match_id or "nil",
+            team_names_cache.alpha_teamname or "nil", 
+            team_names_cache.beta_teamname or "nil"))
         return true
     else
         log(string.format("Failed to save team data: %s", err))
@@ -867,7 +871,7 @@ local function loadTeamDataFromFile()
 
     local file_check = io.open(file_path, "r")
     if not file_check then
-        log("Team data file does not exist, name enforcement disabled")
+        log("Team data file does not exist")
         return false
     end
     file_check:close()
@@ -894,13 +898,19 @@ local function loadTeamDataFromFile()
     end)
 
     if success and result then
+        -- Load all data from file
+        if result.match_id then
+            cached_match_id = result.match_id
+        end
+        
         team_names_cache.alpha_teamname = result.alpha_teamname
         team_names_cache.beta_teamname = result.beta_teamname
         team_names_cache.last_updated = result.last_updated or 0
-        team_data_cache = result.match_data
+        team_data_cache = result.match 
         team_data_fetched = true
 
-        log(string.format("Team data loaded from file - Alpha: %s, Beta: %s", 
+        log(string.format("Data loaded from file - Match ID: %s, Alpha: %s, Beta: %s", 
+            cached_match_id or "nil",
             team_names_cache.alpha_teamname or "nil", 
             team_names_cache.beta_teamname or "nil"))
         return true
@@ -1190,8 +1200,45 @@ local function validateAllPlayerNames()
     end
 end
 
+local function fetchMatchIDFromAPI()
+    local url = string.format("%s/%s/%s", configuration.api_url_matchid, server_ip, server_port)
+
+    local curl_cmd = string.format(
+        'curl -H "Authorization: Bearer %s" --connect-timeout 1 --max-time 2 %s',
+        configuration.api_token,
+        url
+    )
+
+    local result, err = executeCurlCommandSync(curl_cmd)
+
+    if result then
+        if result.match_id then
+            cached_match_id = result.match_id
+        end
+
+        if configuration.force_names and result.match then
+            if result.match.alpha_teamname and result.match.beta_teamname then
+                team_names_cache.alpha_teamname = result.match.alpha_teamname
+                team_names_cache.beta_teamname = result.match.beta_teamname
+                team_names_cache.last_updated = trap_Milliseconds()
+            end
+
+            team_data_cache = result.match
+            team_data_fetched = true
+        end
+
+        log(string.format("API fetch successful - Match ID: %s, Force names: %s", 
+            result.match_id or "nil", 
+            configuration.force_names and "yes" or "no"))
+        return result.match_id
+    end
+
+    log("API fetch failed: " .. (err or "no valid response"))
+    return nil
+end
+
 local function checkPlayerReadyStatus()
-    if not team_data_cache and (not team_names_cache.alpha_teamname or not team_names_cache.beta_teamname) then
+    if not configuration.force_names then
         return
     end
 
@@ -1201,14 +1248,13 @@ local function checkPlayerReadyStatus()
             local was_ready = player_ready_status[clientNum]
 
             if is_ready and not was_ready then
-                log(string.format("Player %d readied up, checking name enforcement", clientNum))
+                log(string.format("Player %d readied up", clientNum))
 
-                if not team_names_cache.alpha_teamname or not team_names_cache.beta_teamname then
-                    log("Fetching team names due to player ready")
+                if not team_data_cache or not team_names_cache.alpha_teamname or not team_names_cache.beta_teamname then
+                    log("First ready detected, fetching team data")
                     local match_id = fetchMatchIDFromAPI()
-                    if match_id and not cached_match_id then
-                        cached_match_id = match_id
-                        log(string.format("Match ID cached from ready check: %s", cached_match_id))
+                    if match_id then
+                        log(string.format("Team data fetched on ready: %s", match_id))
                     end
                 end
 
@@ -2443,40 +2489,7 @@ local function initializeServerInfo()
     return found_config
 end
 
-local function fetchMatchIDFromAPI()
-    local url = string.format("%s/%s/%s", configuration.api_url_matchid, server_ip, server_port)
 
-    local curl_cmd = string.format(
-        'curl -H "Authorization: Bearer %s" %s',
-        configuration.api_token,
-        url
-    )
-
-    local result, err = executeCurlCommandSync(curl_cmd, nil, "200")
-
-    if result then
-        if result.match and result.match.alpha_teamname and result.match.beta_teamname then
-            team_names_cache.alpha_teamname = result.match.alpha_teamname
-            team_names_cache.beta_teamname = result.match.beta_teamname
-            team_names_cache.last_updated = trap_Milliseconds()
-
-            log(string.format("Team names cached - Alpha: %s, Beta: %s", 
-                team_names_cache.alpha_teamname, team_names_cache.beta_teamname))
-        end
-        
-        if configuration.force_names and result.match and not team_data_cache then
-            team_data_cache = result.match 
-            team_data_fetched = true
-        end
-        
-        if result.match_id then
-            return result.match_id
-        end
-    end
-    
-    log("Failed to fetch match ID from API: " .. (err or "unknown error"))
-    return tostring(os.time())
-end
 
 -- Get cached match ID or fetch if needed
 local function getCachedMatchID()
@@ -2508,14 +2521,29 @@ local function handle_gamestate_change(new_gamestate)
         rename_in_progress = {}
 
         if configuration.force_names then
-            if not team_data_cache or not team_names_cache.alpha_teamname then
-                loadTeamDataFromFile()
+            log("Game starting - loading data from file ONLY (no API calls)")
+            loadTeamDataFromFile()
+        end
+
+    elseif new_gamestate == et.GS_WARMUP_COUNTDOWN and old_gamestate == et.GS_WARMUP then
+        log("Warmup countdown - fetching fresh data and saving to file")
+
+        local match_id = fetchMatchIDFromAPI()
+        if match_id then
+            log(string.format("Fresh data fetched: %s", match_id))
+            saveTeamDataToFile()
+
+            if configuration.force_names and team_data_cache and team_names_cache.alpha_teamname and team_names_cache.beta_teamname then
+                validateAllPlayerNames()
             end
+        else
+            log("Failed to fetch fresh data during countdown")
         end
 
     elseif new_gamestate == et.GS_INTERMISSION and old_gamestate == et.GS_PLAYING then
         round_end_time = trap_Milliseconds()
-        log(string.format("Round ended at %d (duration: %.1f seconds)", round_end_time, (round_end_time - round_start_time) / 1000))
+        log("Round ended - clearing cached data")
+
         if configuration.force_names then
             wipeTeamDataFile()
             team_data_cache = nil
@@ -2523,50 +2551,10 @@ local function handle_gamestate_change(new_gamestate)
             team_names_cache.alpha_teamname = nil
             team_names_cache.beta_teamname = nil
             team_names_cache.last_updated = 0
-            log("Team data cache cleared for next round")
-        end
-
-    elseif new_gamestate == et.GS_WARMUP_COUNTDOWN and old_gamestate == et.GS_WARMUP then
-        log("Gamestate 2->1: Performing final validation and refreshing team data")
-
-        if configuration.force_names then
-            log("Fetching fresh team data for final validation")
-            local match_id = fetchMatchIDFromAPI()
-            if match_id then
-                cached_match_id = match_id
-                log(string.format("Match ID refreshed: %s", cached_match_id))
-                if team_data_cache and team_names_cache.alpha_teamname and team_names_cache.beta_teamname then
-                    saveTeamDataToFile()
-                    log("Fresh team data saved to file")
-                end
-                validateAllPlayerNames()
-            else
-                log("Failed to refresh team data (timeout or error), name enforcement may be disabled")
-                if not cached_match_id then
-                    cached_match_id = tostring(os.time())
-                end
-            end
+            cached_match_id = nil
         end
     end
 end
-
-function et_ClientConnect(clientNum, firstTime, isBot)
-    if not cached_match_id or (configuration.force_names and not team_data_fetched) then
-        log(string.format("Player %d connecting, fetching Match ID%s", 
-            clientNum, 
-            (configuration.force_names and not team_data_fetched) and " and team data" or ""))
-        
-        local match_id = fetchMatchIDFromAPI()
-        if match_id then
-            cached_match_id = match_id
-            log(string.format("Match ID fetched: %s", cached_match_id))
-        else
-            log("Failed to fetch match ID on player connect")
-        end
-    end
-    return nil
-end
-
 
 -- Capture obituaries
 function et_Obituary(target, attacker, meansOfDeath)
@@ -2770,7 +2758,7 @@ function SaveStats()
     end
     saveStatsState.inProgress = true
 
-    local matchID = getCachedMatchID()
+    local matchID = fetchMatchIDFromAPI()
     local mapname = Info_ValueForKey(et.trap_GetConfigstring(et.CS_SERVERINFO), "mapname")
     local round = tonumber(et.trap_Cvar_Get("g_currentRound")) == 0 and 2 or 1
 
