@@ -174,10 +174,14 @@
         27-06-2025: v1.2.4 -- Oksii
             - HOTFIX: Accidentally removed fallback method for match_id in previous updates
             - Add support for forced spectator names
+
+        27-06-2025: v1.2.5 -- Oksii
+            - Stricter name policy, use actual name instead of just checking for tags
+            - Minor cleanup of now redundant/unused functions            
 ]]--
 
 local modname = "game-stats-web-api"
-local version = "1.2.4"
+local version = "1.2.5"
 
 -- Required libraries
 local json = require("dkjson")
@@ -943,57 +947,6 @@ local function wipeTeamDataFile()
     end
 end
 
-local function hasValidTeamName(name, expected_team_name)
-    if not name or not expected_team_name then return false end
-
-    local clean_name = strip_colors(name):lower()
-    local clean_expected = strip_colors(expected_team_name):lower()
-
-    return clean_name:sub(1, #clean_expected) == clean_expected
-end
-
-local function getExpectedTeamName(clientNum)
-    local userinfo = trap_GetUserinfo(clientNum)
-    if not userinfo or userinfo == "" then
-        return nil
-    end
-
-    local guid = string.upper(Info_ValueForKey(userinfo, "cl_guid"))
-    if not guid or guid == "" then
-        return nil
-    end
-
-    if not team_data_cache then
-        return nil
-    end
-
-    if team_data_cache.alpha_team then
-        for _, player in ipairs(team_data_cache.alpha_team) do
-            if player.GUID then
-                for _, player_guid in ipairs(player.GUID) do
-                    if string.upper(player_guid) == guid then
-                        return team_names_cache.alpha_teamname
-                    end
-                end
-            end
-        end
-    end
-
-    if team_data_cache.beta_team then
-        for _, player in ipairs(team_data_cache.beta_team) do
-            if player.GUID then
-                for _, player_guid in ipairs(player.GUID) do
-                    if string.upper(player_guid) == guid then
-                        return team_names_cache.beta_teamname
-                    end
-                end
-            end
-        end
-    end
-
-    return nil
-end
-
 local function queuePlayerRename(clientNum, newName, reason)
     table.insert(rename_queue, {
         clientNum = clientNum,
@@ -1095,47 +1048,28 @@ function et_ClientDisconnect(clientNum)
 end
 
 local function enforcePlayerName(clientNum)
-    if not configuration.force_names then
-        return
-    end
-
-    if not team_data_cache or not team_names_cache.alpha_teamname or not team_names_cache.beta_teamname then
-        return
-    end
-
-    if rename_in_progress[clientNum] then
-        return
-    end
+    if not configuration.force_names then return end
+    if not team_data_cache or not team_names_cache.alpha_teamname or not team_names_cache.beta_teamname then return end
+    if rename_in_progress[clientNum] then return end
 
     local userinfo = trap_GetUserinfo(clientNum)
-    if not userinfo or userinfo == "" then
-        return
-    end
+    if not userinfo or userinfo == "" then return end
 
     local guid = string.upper(Info_ValueForKey(userinfo, "cl_guid"))
     local current_name = Info_ValueForKey(userinfo, "name")
-    
-    if not guid or guid == "" or not current_name then
-        return
-    end
+    if not guid or guid == "" or not current_name then return end
 
-    local expected_team_name = getExpectedTeamName(clientNum)
-    if not expected_team_name then
-        return
-    end
+    local correct_name = findPlayerNameByGuid(guid)
+    if not correct_name then return end
 
-    if not hasValidTeamName(current_name, expected_team_name) then
-        local correct_name = findPlayerNameByGuid(guid)
-        if correct_name then
-            local clean_current = strip_colors(current_name)
-            local clean_correct = strip_colors(correct_name)
-            
-            if clean_current ~= clean_correct then
-                log(string.format("Rename queued: Player %s (GUID: %s) '%s' -> '%s'", clientNum, guid, current_name, correct_name))
-                rename_in_progress[clientNum] = true
-                renamePlayer(clientNum, correct_name)
-            end
+    if strip_colors(current_name):lower() ~= strip_colors(correct_name):lower() then
+        local trimmed = correct_name
+        if #trimmed > 35 then
+            trimmed = trimmed:sub(1, 35)
         end
+        log(string.format("Enforcing name for %d: '%s' -> '%s'", clientNum, current_name, trimmed))
+        rename_in_progress[clientNum] = true
+        renamePlayer(clientNum, trimmed)
     end
 end
 
@@ -1198,10 +1132,7 @@ local function checkAllPlayersNamesGameplay(currentTime)
 end
 
 local function validateAllPlayerNames()
-    if not configuration.force_names then
-        return
-    end
-
+    if not configuration.force_names then return end
     if not team_data_cache or not team_names_cache.alpha_teamname or not team_names_cache.beta_teamname then
         log("Team data not available, skipping mass validation")
         return
@@ -1215,27 +1146,12 @@ local function validateAllPlayerNames()
         if et.gentity_get(clientNum, "pers.connected") == CON_CONNECTED then
             local userinfo = trap_GetUserinfo(clientNum)
             if userinfo and userinfo ~= "" then
-                local guid = string.upper(Info_ValueForKey(userinfo, "cl_guid"))
-                local current_name = Info_ValueForKey(userinfo, "name")
                 local sessionTeam = tonumber(et.gentity_get(clientNum, "sess.sessionTeam")) or 0
-
-                if (sessionTeam == 1 or sessionTeam == 2) and guid and guid ~= "" and current_name then
-                    local expected_team_name = getExpectedTeamName(clientNum)
-
-                    if expected_team_name and not hasValidTeamName(current_name, expected_team_name) then
-                        local correct_name = findPlayerNameByGuid(guid)
-                        if correct_name then
-                            log(string.format("Mass validation: Player %s (GUID: %s) missing team name '%s', queuing rename: %s -> %s", 
-                                clientNum, guid, expected_team_name, current_name, correct_name))
-                            queuePlayerRename(clientNum, correct_name, "mass validation check")
-                        else
-                            log(string.format("Mass validation: Player %s (GUID: %s) missing team name but no correct name found: %s", 
-                                clientNum, guid, current_name))
-                        end
-                    end
-
-                elseif sessionTeam == 3 and current_name and spectator_teamname then
-                    if not hasSpectatorPrefix(current_name, spectator_teamname) then
+                if sessionTeam == 1 or sessionTeam == 2 then
+                    enforcePlayerName(clientNum)
+                elseif sessionTeam == 3 then
+                    local current_name = Info_ValueForKey(userinfo, "name")
+                    if current_name and spectator_teamname and not hasSpectatorPrefix(current_name, spectator_teamname) then
                         local new_name = getSpectatorEnforcedName(spectator_teamname, current_name)
                         if new_name ~= current_name then
                             queuePlayerRename(clientNum, new_name, "mass validation spectator")
