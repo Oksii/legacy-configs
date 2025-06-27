@@ -170,10 +170,14 @@
         20-06-2025: v1.2.3 -- Oksii
             - HOTFIX: enforcing names during gamestate swap causes hard crash
             - Added local cache to avoid multiple API calls during gameplay 
+        
+        27-06-2025: v1.2.4 -- Oksii
+            - HOTFIX: Accidentally removed fallback method for match_id in previous updates
+            - Add support for forced spectator names
 ]]--
 
 local modname = "game-stats-web-api"
-local version = "1.2.3"
+local version = "1.2.4"
 
 -- Required libraries
 local json = require("dkjson")
@@ -1135,6 +1139,39 @@ local function enforcePlayerName(clientNum)
     end
 end
 
+local function getFirstColorCode(name)
+    local code = string.match(name, "(%^%w)")
+    return code
+end
+
+local function getSpectatorEnforcedName(spectator_teamname, current_name)
+    spectator_teamname = spectator_teamname or ""
+    current_name = current_name or ""
+    local candidate = spectator_teamname .. " " .. current_name
+    if #candidate <= 35 then
+        return candidate
+    end
+
+    -- Retain the first color code, default to ^7 if none
+    local first_code = getFirstColorCode(current_name) or "^7"
+    local name_no_color = first_code .. strip_colors(current_name)
+    candidate = spectator_teamname .. " " .. name_no_color
+    if #candidate <= 35 then
+        return candidate
+    end
+
+    local allowed = 35 - (#spectator_teamname + 1 + #first_code)
+    local truncated = string.sub(strip_colors(current_name), 1, allowed)
+    return spectator_teamname .. " " .. first_code .. truncated
+end
+
+local function hasSpectatorPrefix(current_name, spectator_teamname)
+    if not current_name or not spectator_teamname then return false end
+    local clean_name = strip_colors(current_name):lower()
+    local clean_prefix = strip_colors(spectator_teamname):lower()
+    return clean_name:sub(1, #clean_prefix) == clean_prefix
+end
+
 local function checkAllPlayersNamesGameplay(currentTime)
     if not configuration.force_names then
         return
@@ -1172,6 +1209,8 @@ local function validateAllPlayerNames()
 
     log("Performing mass validation check on all connected players")
 
+    local spectator_teamname = team_data_cache.spectator_teamname
+
     for clientNum = 0, maxClients - 1 do
         if et.gentity_get(clientNum, "pers.connected") == CON_CONNECTED then
             local userinfo = trap_GetUserinfo(clientNum)
@@ -1180,7 +1219,7 @@ local function validateAllPlayerNames()
                 local current_name = Info_ValueForKey(userinfo, "name")
                 local sessionTeam = tonumber(et.gentity_get(clientNum, "sess.sessionTeam")) or 0
 
-                if guid and guid ~= "" and current_name and (sessionTeam == 1 or sessionTeam == 2) then
+                if (sessionTeam == 1 or sessionTeam == 2) and guid and guid ~= "" and current_name then
                     local expected_team_name = getExpectedTeamName(clientNum)
 
                     if expected_team_name and not hasValidTeamName(current_name, expected_team_name) then
@@ -1192,6 +1231,15 @@ local function validateAllPlayerNames()
                         else
                             log(string.format("Mass validation: Player %s (GUID: %s) missing team name but no correct name found: %s", 
                                 clientNum, guid, current_name))
+                        end
+                    end
+
+                elseif sessionTeam == 3 and current_name and spectator_teamname then
+                    if not hasSpectatorPrefix(current_name, spectator_teamname) then
+                        local new_name = getSpectatorEnforcedName(spectator_teamname, current_name)
+                        if new_name ~= current_name then
+                            queuePlayerRename(clientNum, new_name, "mass validation spectator")
+                            log(string.format("Spectator mass validation: Player %s renamed to '%s'", clientNum, new_name))
                         end
                     end
                 end
@@ -1211,18 +1259,16 @@ local function fetchMatchIDFromAPI()
 
     local result, err = executeCurlCommandSync(curl_cmd)
 
-    if result then
-        if result.match_id then
-            cached_match_id = result.match_id
-        end
+    if result and type(result) == "table" and result.match_id and result.match_id ~= "" then
+        cached_match_id = result.match_id
 
+        -- Force names/team name logic if present
         if configuration.force_names and result.match then
             if result.match.alpha_teamname and result.match.beta_teamname then
                 team_names_cache.alpha_teamname = result.match.alpha_teamname
                 team_names_cache.beta_teamname = result.match.beta_teamname
                 team_names_cache.last_updated = trap_Milliseconds()
             end
-
             team_data_cache = result.match
             team_data_fetched = true
         end
@@ -1233,8 +1279,10 @@ local function fetchMatchIDFromAPI()
         return result.match_id
     end
 
-    log("API fetch failed: " .. (err or "no valid response"))
-    return nil
+    local fallback_match_id = tostring(os.time())
+    cached_match_id = fallback_match_id
+    log("API fetch failed or no match_id in response, falling back to UNIXTIME as match_id: " .. fallback_match_id)
+    return fallback_match_id
 end
 
 local function checkPlayerReadyStatus()
@@ -2487,25 +2535,6 @@ local function initializeServerInfo()
     end
     
     return found_config
-end
-
-
-
--- Get cached match ID or fetch if needed
-local function getCachedMatchID()
-    if cached_match_id then
-        log(string.format("Using cached match ID: %s", cached_match_id))
-        return cached_match_id
-    end
-
-    log("Match ID not cached, fetching...")
-    local new_match_id = fetchMatchIDFromAPI()
-    if new_match_id then
-        cached_match_id = new_match_id
-        log(string.format("Cached new match ID: %s", cached_match_id))
-    end
-
-    return cached_match_id or tostring(os.time())
 end
 
 local function handle_gamestate_change(new_gamestate)
