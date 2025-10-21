@@ -185,7 +185,7 @@
             - Improved performance for stats-only mode
 
         21-10-2025: v1.2.7 -- Oksii
-            - round_start_time was possibly reset too early, moved it to after intermission instead
+            - moved round_start_time to et_initGame to avoid weird race conditions
             - added round_start_unix and round_end_unix for verbosity
 ]]--
 
@@ -2471,8 +2471,6 @@ local function handle_gamestate_change(new_gamestate)
     current_gamestate = new_gamestate
 
     if new_gamestate == et.GS_PLAYING and old_gamestate ~= et.GS_PLAYING then
-        round_start_time = trap_Milliseconds()
-        round_start_unix = os.time()
         if configuration.force_names then
             rename_in_progress = {}
             log("Game starting - loading data from file ONLY (no API calls)")
@@ -3006,6 +3004,11 @@ function et_InitGame()
     local init_success = initializeServerInfo()
     lastFrameTime = et.trap_Milliseconds()
     current_gamestate = tonumber(et.trap_Cvar_Get("gamestate")) or -1
+
+    if current_gamestate == et.GS_PLAYING then
+        round_start_time = trap_Milliseconds()
+        round_start_unix = os.time()
+    end
 
     if configuration.force_names and current_gamestate == et.GS_PLAYING then
         log("Game in progress, attempting to load team data from file")
