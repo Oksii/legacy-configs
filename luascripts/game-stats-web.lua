@@ -177,11 +177,20 @@
 
         27-06-2025: v1.2.5 -- Oksii
             - Stricter name policy, use actual name instead of just checking for tags
-            - Minor cleanup of now redundant/unused functions            
+            - Minor cleanup of now redundant/unused functions
+            
+        07-07-2025: v1.2.6 -- Oksii
+            - Fixed force_names=false to properly skip ALL name-related tasks
+            - Removed unnecessary API calls when names aren't enforced
+            - Improved performance for stats-only mode
+
+        21-10-2025: v1.2.7 -- Oksii
+            - round_start_time was possibly reset too early, moved it to after intermission instead
+            - added round_start_unix and round_end_unix for verbosity
 ]]--
 
 local modname = "game-stats-web-api"
-local version = "1.2.5"
+local version = "1.2.7"
 
 -- Required libraries
 local json = require("dkjson")
@@ -469,6 +478,8 @@ local MAX_OBJ_DISTANCE     = 500  -- Maximum distance in game units to consider 
 -- Round timing variables
 local round_start_time     = 0
 local round_end_time       = 0
+local round_start_unix     = 0
+local round_end_unix       = 0
 local current_gamestate    = -1
 
 local intermission         = false
@@ -649,6 +660,8 @@ local function shell_escape(str)
 end
 
 local function is_player_ready(clientNum)
+    if not configuration.force_names then return false end
+
     local eFlags = et.gentity_get(clientNum, "ps.eFlags")
     if not eFlags then
         return false
@@ -823,10 +836,7 @@ local function getTeamDataFilePath()
 end
 
 local function saveTeamDataToFile()
-    if not team_data_cache then
-        log("No team data to save")
-        return false
-    end
+    if not team_data_cache then return false end
 
     local file_path = getTeamDataFilePath()
     if not file_path then
@@ -1013,9 +1023,7 @@ local clientGuids = setmetatable({}, {
 
 
 local function findPlayerNameByGuid(guid)
-    if not team_data_cache then
-        return nil
-    end
+    if not team_data_cache then return nil end
 
     -- Search both teams
     for _, team_name in pairs({"alpha_team", "beta_team"}) do
@@ -1043,8 +1051,11 @@ function et_ClientDisconnect(clientNum)
         playerStanceStats[guid.guid] = nil
     end
     clientGuids[clientNum] = nil
-    player_ready_status[clientNum] = nil
-    rename_in_progress[clientNum] = nil
+
+    if configuration.force_names then
+        player_ready_status[clientNum] = nil
+        rename_in_progress[clientNum] = nil
+    end
 end
 
 local function enforcePlayerName(clientNum)
@@ -1107,10 +1118,6 @@ local function hasSpectatorPrefix(current_name, spectator_teamname)
 end
 
 local function checkAllPlayersNamesGameplay(currentTime)
-    if not configuration.force_names then
-        return
-    end
-
     if currentTime < last_name_check_time + TEAM_DATA_CHECK_INTERVAL then
         return
     end
@@ -1202,10 +1209,6 @@ local function fetchMatchIDFromAPI()
 end
 
 local function checkPlayerReadyStatus()
-    if not configuration.force_names then
-        return
-    end
-
     for clientNum = 0, maxClients - 1 do
         if et.gentity_get(clientNum, "pers.connected") == CON_CONNECTED then
             local is_ready = is_player_ready(clientNum)
@@ -1503,6 +1506,8 @@ local function resetGameState()
     recent_announcements = {}
     round_start_time = 0
     round_end_time = 0
+    round_start_unix = 0
+    round_end_unix = 0
     saveStatsState.inProgress = false
     scheduledSaveTime = 0
     cached_match_id = nil
@@ -1576,39 +1581,43 @@ function et_ClientUserinfoChanged(clientNum)
         if guid and guid ~= "" then
             clientGuids[clientNum] = { guid = guid, team = sessionTeam }
 
-            if rename_in_progress[clientNum] then
-                rename_in_progress[clientNum] = nil
-                log(string.format("Rename completed for client %d", clientNum))
-            else
-                if current_gamestate == et.GS_PLAYING then
-                    enforcePlayerName(clientNum)
+            if configuration.force_names then
+                if rename_in_progress[clientNum] then
+                    rename_in_progress[clientNum] = nil
+                    log(string.format("Rename completed for client %d", clientNum))
+                else
+                    if current_gamestate == et.GS_PLAYING then
+                        enforcePlayerName(clientNum)
+                    end
                 end
             end
 
-            local playerType = tonumber(et.gentity_get(clientNum, "sess.playerType"))
+            if configuration.collect_objstats then
+                local playerType = tonumber(et.gentity_get(clientNum, "sess.playerType"))
 
-            if playerType ~= nil and (sessionTeam == 1 or sessionTeam == 2) then
-                if not playerClassSwitches[guid] then
-                    playerClassSwitches[guid] = {}
-                end
+                if playerType ~= nil and (sessionTeam == 1 or sessionTeam == 2) then
+                    if not playerClassSwitches[guid] then
+                        playerClassSwitches[guid] = {}
+                    end
 
-                local previousClass = nil
-                if #playerClassSwitches[guid] > 0 then
-                    previousClass = playerClassSwitches[guid][#playerClassSwitches[guid]].toClass
-                end
+                    local previousClass = nil
+                    if #playerClassSwitches[guid] > 0 then
+                        previousClass = playerClassSwitches[guid][#playerClassSwitches[guid]].toClass
+                    end
 
-                if previousClass ~= playerType then
-                    table.insert(playerClassSwitches[guid], {
-                        timestamp = trap_Milliseconds(),
-                        fromClass = previousClass,
-                        toClass = playerType
-                    })
+                    if previousClass ~= playerType then
+                        table.insert(playerClassSwitches[guid], {
+                            timestamp = trap_Milliseconds(),
+                            fromClass = previousClass,
+                            toClass = playerType
+                        })
 
-                    log(string.format("Player %s switched class from %s to %s", 
-                        guid, 
-                        previousClass and CLASS_LOOKUP[previousClass] or "none",
-                        CLASS_LOOKUP[playerType] or "unknown"
-                    ))
+                        log(string.format("Player %s switched class from %s to %s", 
+                            guid, 
+                            previousClass and CLASS_LOOKUP[previousClass] or "none",
+                            CLASS_LOOKUP[playerType] or "unknown"
+                        ))
+                    end
                 end
             end
         end
@@ -2463,33 +2472,35 @@ local function handle_gamestate_change(new_gamestate)
 
     if new_gamestate == et.GS_PLAYING and old_gamestate ~= et.GS_PLAYING then
         round_start_time = trap_Milliseconds()
-        rename_in_progress = {}
-
+        round_start_unix = os.time()
         if configuration.force_names then
+            rename_in_progress = {}
             log("Game starting - loading data from file ONLY (no API calls)")
             loadTeamDataFromFile()
         end
 
     elseif new_gamestate == et.GS_WARMUP_COUNTDOWN and old_gamestate == et.GS_WARMUP then
-        log("Warmup countdown - fetching fresh data and saving to file")
+        if configuration.force_names then
+            log("Warmup countdown - fetching fresh data and saving to file")
+            local match_id = fetchMatchIDFromAPI()
+            if match_id then
+                log(string.format("Fresh data fetched: %s", match_id))
+                saveTeamDataToFile()
 
-        local match_id = fetchMatchIDFromAPI()
-        if match_id then
-            log(string.format("Fresh data fetched: %s", match_id))
-            saveTeamDataToFile()
-
-            if configuration.force_names and team_data_cache and team_names_cache.alpha_teamname and team_names_cache.beta_teamname then
-                validateAllPlayerNames()
+                if team_data_cache and team_names_cache.alpha_teamname and team_names_cache.beta_teamname then
+                    validateAllPlayerNames()
+                end
+            else
+                log("Failed to fetch fresh data during countdown")
             end
-        else
-            log("Failed to fetch fresh data during countdown")
         end
 
     elseif new_gamestate == et.GS_INTERMISSION and old_gamestate == et.GS_PLAYING then
         round_end_time = trap_Milliseconds()
-        log("Round ended - clearing cached data")
+        round_end_unix = os.time()
 
         if configuration.force_names then
+            log("Round ended - clearing cached data")
             wipeTeamDataFile()
             team_data_cache = nil
             team_data_fetched = false
@@ -2723,7 +2734,9 @@ function SaveStats()
         server_ip = server_ip,
         server_port = server_port,
         round_start = round_start_time,
-        round_end = round_end_time
+        round_end = round_end_time,
+        round_start_unix = round_start_unix,
+        round_end_unix = round_end_unix
     }
 
     if configuration.collect_obituaries then
@@ -2890,7 +2903,10 @@ function et_RunFrame(gameFrameLevelTime)
     handle_gamestate_change(gamestate)
 
     levelTime = gameFrameLevelTime
-    trackPlayerStanceAndMovement(gameFrameLevelTime)
+    
+    if configuration.collect_movement_stats or configuration.collect_stance_stats then
+        trackPlayerStanceAndMovement(gameFrameLevelTime)
+    end
 
     if configuration.force_names and gamestate == et.GS_WARMUP then
         checkPlayerReadyStatus()
@@ -2898,9 +2914,10 @@ function et_RunFrame(gameFrameLevelTime)
         checkAllPlayersNamesGameplay(gameFrameLevelTime)
     end
 
-    processRenameQueue(gameFrameLevelTime)
+    if configuration.force_names then
+        processRenameQueue(gameFrameLevelTime)
+    end
 
-    -- store stats in case player leaves prematurely
     if gameFrameLevelTime >= nextStoreTime then
         StoreStats()
         nextStoreTime = gameFrameLevelTime + storeTimeInterval
@@ -2990,12 +3007,13 @@ function et_InitGame()
     lastFrameTime = et.trap_Milliseconds()
     current_gamestate = tonumber(et.trap_Cvar_Get("gamestate")) or -1
 
-    if current_gamestate == et.GS_PLAYING and configuration.force_names then
+    if configuration.force_names and current_gamestate == et.GS_PLAYING then
         log("Game in progress, attempting to load team data from file")
         loadTeamDataFromFile()
     end
 
-    if (current_gamestate == et.GS_WARMUP or current_gamestate == et.GS_WARMUP_COUNTDOWN) and 
+    if configuration.force_names and 
+       (current_gamestate == et.GS_WARMUP or current_gamestate == et.GS_WARMUP_COUNTDOWN) and 
        configuration.api_url_matchid and configuration.api_token then
         log(string.format("Gamestate %d, fetching match ID", current_gamestate))
         local match_id = fetchMatchIDFromAPI()
@@ -3005,6 +3023,8 @@ function et_InitGame()
         else
             log("Failed to fetch match ID during init")
         end
+    elseif not configuration.force_names then
+        log("force_names disabled - skipping API calls during init")
     end
 
     -- Initialize clientGuids cache for all connected players
@@ -3024,5 +3044,8 @@ function et_InitGame()
     end
     
     log(string.rep("-", 50))
-    log(string.format("%s v%s initialized %s", modname, version, init_success and "successfully" or "with warnings"))
+    log(string.format("%s v%s initialized %s (force_names: %s)", 
+        modname, version, 
+        init_success and "successfully" or "with warnings",
+        configuration.force_names and "enabled" or "disabled"))
 end
