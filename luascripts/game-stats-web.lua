@@ -187,6 +187,8 @@
         21-10-2025: v1.2.7 -- Oksii
             - moved round_start_time to et_initGame to avoid weird race conditions
             - added round_start_unix and round_end_unix for verbosity
+            - Fixed vsay custom string capture - was only recording first argument
+            - Added vsay_text field for vsay commands with custom text (e.g., "vsay cheer hello world")
 ]]--
 
 local modname = "game-stats-web-api"
@@ -2582,12 +2584,26 @@ function et_ClientCommand(clientNum, command)
             return 0
         end
 
-        table_insert(messages, {
+        local message_entry = {
             timestamp = trap_Milliseconds(),
             guid = client_data.guid,
             command = command,
             message = et.trap_Argv(1)
-        })
+        }
+
+        local is_vsay = command == "vsay" or command == "vsay_team" or command == "vsay_buddy"
+        if is_vsay then
+            local argc = et.trap_Argc()
+            if argc > 2 then
+                local vsay_text_parts = {}
+                for i = 2, argc - 1 do
+                    table_insert(vsay_text_parts, et.trap_Argv(i))
+                end
+                message_entry.vsay_text = table.concat(vsay_text_parts, " ")
+            end
+        end
+
+        table_insert(messages, message_entry)
     end
     return 0
 end
