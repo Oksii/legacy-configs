@@ -2584,22 +2584,20 @@ function et_ClientCommand(clientNum, command)
             return 0
         end
 
+        local is_vsay = command == "vsay" or command == "vsay_team" or command == "vsay_buddy"
+
         local message_entry = {
             timestamp = trap_Milliseconds(),
             guid = client_data.guid,
             command = command,
-            message = et.trap_Argv(1)
+            message = is_vsay and et.trap_Argv(1) or et.ConcatArgs(1)
         }
 
-        local is_vsay = command == "vsay" or command == "vsay_team" or command == "vsay_buddy"
+        -- For vsay commands, capture custom text if present
         if is_vsay then
             local argc = et.trap_Argc()
             if argc > 2 then
-                local vsay_text_parts = {}
-                for i = 2, argc - 1 do
-                    table_insert(vsay_text_parts, et.trap_Argv(i))
-                end
-                message_entry.vsay_text = table.concat(vsay_text_parts, " ")
+                message_entry.vsay_text = et.ConcatArgs(2)
             end
         end
 
