@@ -3044,6 +3044,8 @@ gold_crate
 		accum 0 inc 1
 		accum 0 trigger_if_equal 1 gold_crate stolen1
 		accum 0 trigger_if_equal 2 gold_crate stolen2
+		setstate goldbars_cm_toi invisible
+		setstate goldbars_cm_marker invisible
 	}
 
 	trigger secured
@@ -3057,6 +3059,8 @@ gold_crate
 		accum 0 inc -1
 		accum 0 trigger_if_equal 0 gold_crate returned1
 		accum 0 trigger_if_equal 1 gold_crate returned2
+		setstate goldbars_cm_toi default
+		setstate goldbars_cm_marker default
 	}
 
 	trigger stolen1
