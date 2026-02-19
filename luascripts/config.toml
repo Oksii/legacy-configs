@@ -1,6 +1,6 @@
 # ET:Legacy Objective Tracking Configuration
 
-# Oksii 
+# Oksii
 # Jan 2025
 
 ########################
@@ -10,7 +10,7 @@
 # Toggle between presets.
 # docker_config = false will use [configuration] table
 
-# docker_config = true will use [docker_configuration] 
+# docker_config = true will use [docker_configuration]
 # and environment variables provided by docker on runtime.
 # Automatically set via docker container, no edit required.
 
@@ -225,7 +225,7 @@ enabled = true
 destruct_pattern = "main gate has been destroyed"
 plant_pattern = "the main entrance"
 
-[maps.erdenberg_t2.buildables.east_flak88] 
+[maps.erdenberg_t2.buildables.east_flak88]
 destruct_pattern = "the east flak88 has been destroyed"
 plant_pattern = "the east flak88"
 

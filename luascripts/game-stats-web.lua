@@ -18,10 +18,10 @@
     along with ET: Legacy. If not, see <http://www.gnu.org/licenses/>.
 ]]--
 
---[[ 
+--[[
     Changelog:
         01.01.1970: v1.0.0 -- MaxPower
-            - And he said let there be light. Date probably accurate. 
+            - And he said let there be light. Date probably accurate.
 
         24-12-2024: v1.0.1 -- Oksii
             - Added local logging
@@ -35,14 +35,14 @@
             - Moved matchid to remote host, fetch it just before stats submit
             - Use net_ip and net_port as identifiers against the remote host,
             - I intend to use dynamic routes but you could probably just package it
-              as a json too. 
+              as a json too.
             - Implement few retries just in case
-            - Fetch IP from public API if net_ip returns 0.0.0.0 
+            - Fetch IP from public API if net_ip returns 0.0.0.0
               as not everyone will have a binding set.
             - Default to unixtime if matchid can't be retrieved.
 
-        30-12-2024: v1.0.4 -- Oksii 
-            - Added server_ip and server_port to json output to be more easily 
+        30-12-2024: v1.0.4 -- Oksii
+            - Added server_ip and server_port to json output to be more easily
               identifiable when custom games are submitted that no matchid exists for
 
         31-12-2024: v1.0.5 -- OKsii
@@ -52,7 +52,7 @@
                    meansOfDeath https://etlegacy-lua-docs.readthedocs.io/en/latest/constants.html#mod-constants
             - Added message capture for all chats
             - Made all toggleable via configuration table
-        
+
         01-01-2025: v1.0.6 -- Oksii
             - Sanitize message log, we think chat binds may have caused the json to malform over special characters
             - Added some more robustness and error handling around stat submission
@@ -62,7 +62,7 @@
             - Added CURL retries for more robustness and better error handling
 
         02-01-2025: v1.0.7 -- Oksii
-            - Clean up code, improve for performance and memory optimization 
+            - Clean up code, improve for performance and memory optimization
             - Sanitize SaveStats all in a single pass
             - Set string length limit of 256 chars. Chat is limited to 150, what else would even get close?
             - Added LOG_FORMAT for consistent log formatting
@@ -70,17 +70,17 @@
             - Fixed initialization order and removed duplicate maxClients/max_clients
             - Standardized maxClients variable usage throughout
             - Refactor executeCurlCommand to save json content to temp file and save as binary data rather than string
-            - Refactor executeCurlCommand to use several additional command options and simplify GET's 
+            - Refactor executeCurlCommand to use several additional command options and simplify GET's
             - Added lastSpawnTime to obituaries
             - Added HitRegions to damageSats
             - Removed debug logging and json dumps
-        
+
         07-01-2025: v1.0.8 -- Oksii
             - Improved error handling with logger to catch path/perm issues gracefully
 
         08-01-2025: v1.0.9 -- Oksii
             - Added 3-second delay before SaveStats() to prevent lag spikes during gamestate transition
-        
+
         11-01-2025: v1.0.10 -- MaxPower
             - Added function SaveStatstoFile for local output of JSON stats data
             - Added (back) local configuration variable dump_stats_data for manual toggle of local output
@@ -97,14 +97,14 @@
             - Added default config and docker preset to config.toml
             - Improved stat collection, early returns on disables
             - Safety guard for GetAllHitRegions to prevent errors on fall damage
-            - Safety guard for SaveStats to prevent multiple calls 
+            - Safety guard for SaveStats to prevent multiple calls
             - Improved logging
-            - Cleaned up redundant function from obj-track.lua merger 
+            - Cleaned up redundant function from obj-track.lua merger
             - Moved map config and server relevant cvars to initializeServerInfo to free up et_initgame
-            - Cleaned up et_runframe 
+            - Cleaned up et_runframe
             - Added config validation
             - Added helper to normalize strings
-            - Added helper to strip colors for et_Print 
+            - Added helper to strip colors for et_Print
 
         07-02-2025: v1.1.1 -- Oksii
             - Added dynamic flag coordinate detection and tracking from game entities
@@ -123,7 +123,7 @@
 
         18-02-2025: v1.1.2 -- Oksii
             - Added health check in find_nearest_player to avoid attributing spectators
-        
+
         14-03-2025: v1.1.3 -- Oksii
             - Added tracking for class switches via ClientUserinfoChanged
 
@@ -139,22 +139,22 @@
             - stance_stats renamed to stance_stats_seconds
             - Added round_start and round_end timestamps to round_info
             - Average distance_travelled_spawn by tracking amount of player spawns
-        
+
         02-05-2025: v1.1.7 -- Oksii
             - Added in_objcarrier, in_vehicleescort, in_disguise, in_sprint, in_turtle, in_downed stance states
             - Added player speed tracking
             - Fixed world crush event in obituaries
-        
+
         04-05-2025: v1.1.8 -- Oksii
             - Added config toggle to support bobika's mapscripts and regular mapscripts both
-              Will fallback to regular if no bobika configurations exist 
-        
+              Will fallback to regular if no bobika configurations exist
+
         13-06-2025: v1.1.9 -- Oksii
             - Added player/team name enforcement
-        
+
         14-06-2025: v1.2 -- Oksii
             - Refactor curl to use async background processing
-            - Cache matchid on init/player connect to reduce processing lag 
+            - Cache matchid on init/player connect to reduce processing lag
             - More aggressive strip_color regex
             - Added rename queue for connecting players to avoid config overwrites
             - Added gamestate check in message logger to avoid intermission errors
@@ -164,13 +164,13 @@
 
         19-06-2025: v1.2.2 -- Oksii
             - Added version check
-            - Enforce naming policies and be stricter about renames during gameplay. 
+            - Enforce naming policies and be stricter about renames during gameplay.
             - Reduced some of the logging verbosity
-        
+
         20-06-2025: v1.2.3 -- Oksii
             - HOTFIX: enforcing names during gamestate swap causes hard crash
-            - Added local cache to avoid multiple API calls during gameplay 
-        
+            - Added local cache to avoid multiple API calls during gameplay
+
         27-06-2025: v1.2.4 -- Oksii
             - HOTFIX: Accidentally removed fallback method for match_id in previous updates
             - Add support for forced spectator names
@@ -178,7 +178,7 @@
         27-06-2025: v1.2.5 -- Oksii
             - Stricter name policy, use actual name instead of just checking for tags
             - Minor cleanup of now redundant/unused functions
-            
+
         07-07-2025: v1.2.6 -- Oksii
             - Fixed force_names=false to properly skip ALL name-related tasks
             - Removed unnecessary API calls when names aren't enforced
@@ -224,12 +224,12 @@ local configuration = {
 local function get_config_path()
     local fs_basepath = et.trap_Cvar_Get("fs_basepath")
     local fs_game = et.trap_Cvar_Get("fs_game")
-    
+
     if not fs_basepath or not fs_game then
         et.G_Print(string.format("%s: Failed to get game paths\n", modname))
         return nil
     end
-    
+
     return string.format("%s/%s/luascripts/config.toml", fs_basepath, fs_game)
 end
 
@@ -246,22 +246,22 @@ local function load_config(filepath)
         return nil
     end
     exists:close()
-    
+
     -- Read file
     local file, err = io.open(filepath, "r")
     if not file then
         et.G_Print(string.format("%s: Failed to open config file: %s\n", modname, err))
         return nil
     end
-    
+
     local content = file:read("*all")
     file:close()
-    
+
     if not content or content == "" then
         et.G_Print(string.format("%s: Config file is empty\n", modname))
         return nil
     end
-    
+
     -- Parse TOML
     local success, result = pcall(toml.parse, content)
     if not success then
@@ -273,7 +273,7 @@ local function load_config(filepath)
         et.G_Print(string.format("%s: %s\n", modname, error_msg))
         return nil
     end
-    
+
     return result
 end
 
@@ -302,7 +302,7 @@ end
 local function process_config(config, use_bobika)
     local normalized = {}
     local maps_section
-    
+
     if use_bobika then
         maps_section = config.bobika and config.bobika.maps
         if maps_section then
@@ -319,7 +319,7 @@ local function process_config(config, use_bobika)
     if not maps_section then
         return {}
     end
-    
+
     for map_name, map_data in pairs(maps_section) do
         normalized[normalize_key(map_name)] = {
             objectives = {},
@@ -328,7 +328,7 @@ local function process_config(config, use_bobika)
             misc = {},
             escort = {}
         }
-        
+
         -- Process objectives
         if map_data.objectives then
             for obj_name, obj_data in pairs(map_data.objectives) do
@@ -340,7 +340,7 @@ local function process_config(config, use_bobika)
                 })
             end
         end
-        
+
         -- Process buildables
         if map_data.buildables then
             for build_name, build_data in pairs(map_data.buildables) do
@@ -410,7 +410,7 @@ end
 do
     local config_path = get_config_path()
     local config = load_config(config_path)
-    
+
     if not config then
         et.G_Print(string.format("%s: Failed to load configuration file: %s\n", modname, config_path))
         return
@@ -419,7 +419,7 @@ do
     -- Check which configuration to use based on docker_config flag
     local use_docker = config.docker_config or false
     local config_section = use_docker and config.docker_configuration or config.configuration
-    
+
     if not config_section then
         et.G_Print(string.format("%s: No configuration section found\n", modname))
         return
@@ -432,7 +432,7 @@ do
 
     -- Process map configs
     local use_bobika = configuration.bobika_mapscripts
-    
+
     if config.maps or (config.bobika and config.bobika.maps) then
         map_configs = process_config(config, use_bobika)
         if table_count(map_configs) == 0 then
@@ -441,7 +441,7 @@ do
     else
         et.G_Print(string.format("%s: No maps section found in config\n", modname))
     end
-    
+
     -- Process common buildables with bobika support
     if config.common_buildables or (config.bobika and config.bobika.common_buildables) then
         common_buildables = process_common_buildables(config, use_bobika)
@@ -509,7 +509,7 @@ local TEAM_DATA_FILE = "team_data.json"
 local TEAM_DATA_CHECK_INTERVAL = 5000
 local team_data_file_path = nil
 local last_name_check_time = 0
-local rename_in_progress = {} 
+local rename_in_progress = {}
 
 -- Rename queue
 local rename_queue = {}
@@ -602,20 +602,20 @@ local log = configuration.logging_enabled and function(message)
             et.G_LogPrint(string.format("game-stats-web.lua: Failed to open log file: %s\n", open_err or "unknown error"))
             return
         end
-        
+
         local write_success, write_err = pcall(function()
             local time = et.trap_Milliseconds()
             local ms = time % 1000
             file:write(string.format("[%s.%03d] %s\n", os.date("%Y-%m-%d %H:%M:%S"), ms, message))
         end)
-        
+
         file:close()
-        
+
         if not write_success then
             et.G_LogPrint(string.format("game-stats-web.lua: Failed to write to log file: %s\n", write_err or "unknown error"))
         end
     end)
-    
+
     if not success then
         et.G_LogPrint(string.format("game-stats-web.lua: Logging error: %s\n", err or "unknown error"))
     end
@@ -629,20 +629,20 @@ function ConvertTimelimit(timelimit)
 	seconds       = math.floor(seconds - (mins * 60))
 	local tens    = math.floor(seconds / 10)
 	seconds       = math.floor(seconds - (tens * 10))
-	
+
 	return string.format("%i:%i%i", mins, tens, seconds)
 end
 
 local function calculateDistance3D(pos1, pos2)
     if not pos1 or not pos2 then return 0 end
-    
+
     local ax, ay, az = pos1[1], pos1[2], pos1[3]
     local bx, by, bz = pos2[1], pos2[2], pos2[3]
     local dx = math.abs(bx - ax)
     local dy = math.abs(by - ay)
     local dz = math.abs(bz - az)
     local distance_units = math.sqrt((dx ^ 2) + (dy ^ 2) + (dz ^ 2))
-    
+
     -- Convert game units to meters (1 meter ≈ 39.37 game units)
     return distance_units / 39.37
 end
@@ -685,7 +685,7 @@ local function executeCurlCommandAsync(curl_cmd, payload)
         end
         f:write(payload)
         f:close()
-        
+
         -- Modify curl command to read from file
         curl_cmd = string.format('%s --data-binary @%s', curl_cmd, temp_file)
     end
@@ -696,16 +696,16 @@ local function executeCurlCommandAsync(curl_cmd, payload)
         curl_cmd = curl_cmd .. " --retry 3 --retry-delay 1 --retry-max-time 15"
         curl_cmd = curl_cmd .. " --silent --output /dev/null"  -- Don't capture output
     end
-    
+
     -- Make it background process
     curl_cmd = curl_cmd .. " &"
-    
+
     local success = os.execute(curl_cmd)
 
     if temp_file then
         os.execute(string.format("sleep 15 && rm -f %s &", temp_file))
     end
-    
+
     return success == 0, success == 0 and "Request sent asynchronously" or "Failed to start async request"
 end
 
@@ -759,25 +759,25 @@ local function executeCurlCommandSync(curl_cmd, payload, expected_code)
         -- If JSON decode fails, return the raw result
         return result
     end
-    
+
     return nil, "No response body"
 end
 
 local function getPublicIP()
     local curl_cmd = 'curl -s --connect-timeout 2 --max-time 5 https://api.ipify.org?format=json'
     local result, err = executeCurlCommandSync(curl_cmd)
-    
+
     if result and result.ip then
         return result.ip
     end
-    
+
     log("Failed to fetch public IP: " .. (err or "unknown error"))
     return "0.0.0.0"
 end
 
 local function checkVersion()
-    if not configuration.version_check or 
-       not configuration.api_url_version or 
+    if not configuration.version_check or
+       not configuration.api_url_version or
        configuration.api_url_version:match("^%%.*%%$") then
         return
     end
@@ -796,7 +796,7 @@ local function checkVersion()
         if result and result.latest_version then
             local latest_version = result.latest_version
             log(string.format("Current version: %s, Latest version: %s", version, latest_version))
-            
+
             if version ~= latest_version then
                 et.trap_SendServerCommand(-1, string.format(
                     "chat \"^3game-stats-web.lua^7 is outdated (^i%s^7).\"",
@@ -824,15 +824,15 @@ local function getTeamDataFilePath()
     if team_data_file_path then
         return team_data_file_path
     end
-    
+
     local fs_basepath = et.trap_Cvar_Get("fs_basepath")
     local fs_game = et.trap_Cvar_Get("fs_game")
-    
+
     if not fs_basepath or not fs_game then
         log("Failed to get game paths for team data file")
         return nil
     end
-    
+
     team_data_file_path = string.format("%s/%s/luascripts/%s", fs_basepath, fs_game, TEAM_DATA_FILE)
     return team_data_file_path
 end
@@ -865,15 +865,15 @@ local function saveTeamDataToFile()
         if not file then
             error("Failed to open file: " .. (open_err or "unknown error"))
         end
-        
+
         file:write(json_str)
         file:close()
     end)
 
     if success then
-        log(string.format("Team data saved - Match ID: %s, Alpha: %s, Beta: %s", 
+        log(string.format("Team data saved - Match ID: %s, Alpha: %s, Beta: %s",
             cached_match_id or "nil",
-            team_names_cache.alpha_teamname or "nil", 
+            team_names_cache.alpha_teamname or "nil",
             team_names_cache.beta_teamname or "nil"))
         return true
     else
@@ -922,16 +922,16 @@ local function loadTeamDataFromFile()
         if result.match_id then
             cached_match_id = result.match_id
         end
-        
+
         team_names_cache.alpha_teamname = result.alpha_teamname
         team_names_cache.beta_teamname = result.beta_teamname
         team_names_cache.last_updated = result.last_updated or 0
-        team_data_cache = result.match 
+        team_data_cache = result.match
         team_data_fetched = true
 
-        log(string.format("Data loaded from file - Match ID: %s, Alpha: %s, Beta: %s", 
+        log(string.format("Data loaded from file - Match ID: %s, Alpha: %s, Beta: %s",
             cached_match_id or "nil",
-            team_names_cache.alpha_teamname or "nil", 
+            team_names_cache.alpha_teamname or "nil",
             team_names_cache.beta_teamname or "nil"))
         return true
     else
@@ -966,8 +966,8 @@ local function queuePlayerRename(clientNum, newName, reason)
         reason = reason,
         timestamp = trap_Milliseconds()
     })
-    
-    log(string.format("Queued rename for player %d: %s (reason: %s)", 
+
+    log(string.format("Queued rename for player %d: %s (reason: %s)",
         clientNum, newName, reason))
 end
 
@@ -980,14 +980,14 @@ end
 
 local function processRenameQueue(currentTime)
     if #rename_queue == 0 then return end
-    
+
     if currentTime < rename_timer then return end
 
     local rename_data = table.remove(rename_queue, 1)
     if rename_data then
         if et.gentity_get(rename_data.clientNum, "pers.connected") == CON_CONNECTED then
             renamePlayer(rename_data.clientNum, rename_data.newName)
-            log(string.format("Processed rename: Player %d -> %s (%s)", 
+            log(string.format("Processed rename: Player %d -> %s (%s)",
                 rename_data.clientNum, rename_data.newName, rename_data.reason))
         else
             log(string.format("Skipped rename for disconnected player %d", rename_data.clientNum))
@@ -1042,7 +1042,7 @@ local function findPlayerNameByGuid(guid)
             end
         end
     end
-    
+
     return nil
 end
 
@@ -1198,8 +1198,8 @@ local function fetchMatchIDFromAPI()
             team_data_fetched = true
         end
 
-        log(string.format("API fetch successful - Match ID: %s, Force names: %s", 
-            result.match_id or "nil", 
+        log(string.format("API fetch successful - Match ID: %s, Force names: %s",
+            result.match_id or "nil",
             configuration.force_names and "yes" or "no"))
         return result.match_id
     end
@@ -1240,10 +1240,10 @@ local function initializePlayerTracking(clientNum)
     if not guid or guid.guid == "WORLD" then return end
 
     local team = guid.team or tonumber(et.gentity_get(clientNum, "sess.sessionTeam")) or 0
-    if team ~= et.TEAM_AXIS and team ~= et.TEAM_ALLIES then 
+    if team ~= et.TEAM_AXIS and team ~= et.TEAM_ALLIES then
         return
     end
-    
+
     if not playerMovementStats[guid.guid] then
         playerMovementStats[guid.guid] = {
             distance_travelled = 0,
@@ -1256,18 +1256,18 @@ local function initializePlayerTracking(clientNum)
             total_speed_sum = 0
         }
     end
-    
+
     if not playerStanceStats[guid.guid] then
         playerStanceStats[guid.guid] = {
             in_prone = 0,
             in_crouch = 0,
             in_mg = 0,
             in_lean = 0,
-            in_objcarrier = 0,      
-            in_vehiclescort = 0,    
-            in_disguise = 0,        
-            in_sprint = 0,          
-            in_turtle = 0,          
+            in_objcarrier = 0,
+            in_vehiclescort = 0,
+            in_disguise = 0,
+            in_sprint = 0,
+            in_turtle = 0,
             is_downed = 0,
             last_stance_check = 0,
             last_sprint_time = MAX_SPRINT_TIME
@@ -1294,7 +1294,7 @@ local function trackPlayerStanceAndMovement(gameFrameLevelTime)
             spawnTrack.tracking_active = false
 
             if playerMovementStats[guid] then
-                playerMovementStats[guid].distance_travelled_spawn = 
+                playerMovementStats[guid].distance_travelled_spawn =
                     playerMovementStats[guid].distance_travelled_spawn + spawnTrack.distance_travelled
             end
         end
@@ -1323,13 +1323,13 @@ local function trackPlayerStanceAndMovement(gameFrameLevelTime)
                     if stanceStats then
                         local currentTime = gameFrameLevelTime
                         local timeDelta = currentTime - (stanceStats.last_stance_check or currentTime)
-                        
+
                         if isAlive and isNotDowned then
                             local sprintTime = tonumber(et.gentity_get(clientNum, "ps.stats", 8)) or MAX_SPRINT_TIME
                             local lastSpawnTime = tonumber(et.gentity_get(clientNum, "pers.lastSpawnTime")) or 0
                             local spawnTrack = playerSpawnTracking[guid.guid]
 
-                            if lastSpawnTime > 0 and 
+                            if lastSpawnTime > 0 and
                             (currentTime - lastSpawnTime) < SPAWN_DETECTION_THRESHOLD and
                             (not spawnTrack.last_detected_spawn_time or lastSpawnTime > spawnTrack.last_detected_spawn_time) then
 
@@ -1374,8 +1374,8 @@ local function trackPlayerStanceAndMovement(gameFrameLevelTime)
                                 local STAMINA_CHANGE_THRESHOLD = 50
 
                                 local isSprinting = sprintDelta > STAMINA_CHANGE_THRESHOLD
-                                local isTurtle = (sprintTime == 0) or 
-                                                (sprintTime == MAX_SPRINT_TIME) or 
+                                local isTurtle = (sprintTime == 0) or
+                                                (sprintTime == MAX_SPRINT_TIME) or
                                                 (sprintDelta < -STAMINA_CHANGE_THRESHOLD)
 
                                 if isProne then
@@ -1423,14 +1423,14 @@ local function trackPlayerStanceAndMovement(gameFrameLevelTime)
                             if movementStats then
                                 local currentPos = et.gentity_get(clientNum, "ps.origin")
                                 local velocity = et.gentity_get(clientNum, "ps.velocity")
-                                
+
                                 if velocity then
                                     local speed_ups = math.sqrt(velocity[1]*velocity[1] + velocity[2]*velocity[2] + velocity[3]*velocity[3])
 
                                     if speed_ups > movementStats.peak_speed_ups then
                                         movementStats.peak_speed_ups = speed_ups
                                     end
-                                    
+
                                     if speed_ups > 10 then
                                         movementStats.total_speed_samples = movementStats.total_speed_samples + 1
                                         movementStats.total_speed_sum = movementStats.total_speed_sum + speed_ups
@@ -1466,13 +1466,13 @@ end
 
 -- Objective tracking utilities
 local function match_any_pattern(text, patterns)
-    if type(patterns) ~= "table" then 
+    if type(patterns) ~= "table" then
         if type(patterns) == "string" then
             return string.find(normalize_key(text), normalize_key(patterns))
         end
-        return false 
+        return false
     end
-    
+
     local normalized_text = normalize_key(text)
     for _, pattern in ipairs(patterns) do
         if string.find(normalized_text, normalize_key(pattern)) then
@@ -1517,7 +1517,7 @@ end
 
 local function get_base_map_name(full_mapname)
     full_mapname = string.lower(full_mapname)
-    
+
     -- Strip common prefixes
     local prefixes = {"etl_", "et_", "mp_", "sw_"}
     for _, prefix in ipairs(prefixes) do
@@ -1526,13 +1526,13 @@ local function get_base_map_name(full_mapname)
             break
         end
     end
-    
+
     -- Strip common suffixes
     local suffixes = {"_b%d+", "_v%d+", "_final", "_te", "_sw"}
     for _, suffix in ipairs(suffixes) do
         full_mapname = string.gsub(full_mapname, suffix .. "$", "")
     end
-    
+
     return full_mapname
 end
 
@@ -1614,8 +1614,8 @@ function et_ClientUserinfoChanged(clientNum)
                             toClass = playerType
                         })
 
-                        log(string.format("Player %s switched class from %s to %s", 
-                            guid, 
+                        log(string.format("Player %s switched class from %s to %s",
+                            guid,
                             previousClass and CLASS_LOOKUP[previousClass] or "none",
                             CLASS_LOOKUP[playerType] or "unknown"
                         ))
@@ -1632,7 +1632,7 @@ local function add_recent_announcement(text, timestamp)
         text = text,
         timestamp = timestamp
     })
-    
+
     if #recent_announcements > announcements_buffer then
         table.remove(recent_announcements)
     end
@@ -1667,7 +1667,7 @@ local function record_obj_stat(guid, event_type, objective, timestamp, killer_in
             shoves_received = {}
         }
     end
-    
+
     -- Handle carrier killed events differently
     if event_type == "obj_carrierkilled" and killer_info then
         objstats[guid][event_type][timestamp] = {
@@ -1678,8 +1678,8 @@ local function record_obj_stat(guid, event_type, objective, timestamp, killer_in
     else
         objstats[guid][event_type][timestamp] = objective or "unknown"
     end
-    
-    log(string.format("Recorded objective event - GUID: %s, Event: %s, Objective: %s", 
+
+    log(string.format("Recorded objective event - GUID: %s, Event: %s, Objective: %s",
         guid,
         event_type,
         objective or "unknown"
@@ -1693,15 +1693,15 @@ local function update_objective_state(obj_name, action, guid, normalized_text)
         last_action = "",
         timestamp = 0
     }
-    
+
     local timestamp = trap_Milliseconds()
     objective_states[obj_name].timestamp = timestamp
     objective_states[obj_name].last_action = action
-    
+
     if normalized_text then
         objective_states[obj_name].last_announce = normalized_text
     end
-    
+
     if guid and action == "planted" then
         objective_states[obj_name].planter_guid = guid.guid
     end
@@ -1727,7 +1727,7 @@ local function get_active_covert_ops()
                 log(string.format("Found covert ops: Player %d (GUID: %s)", clientNum, client.guid))
             end
         end
-    end    
+    end
     return covert_ops_clients
 end
 
@@ -1735,7 +1735,7 @@ local function handle_destroyer_attribution(obj_name)
     local destroyer_guid, valid_destroyer_found = nil, false
 
     -- Check for planter first
-    if objective_states[obj_name] and 
+    if objective_states[obj_name] and
        objective_states[obj_name].planter_guid then
         destroyer_guid = objective_states[obj_name].planter_guid
         valid_destroyer_found = true
@@ -1756,9 +1756,9 @@ local function handle_destroyer_attribution(obj_name)
     return destroyer_guid, valid_destroyer_found
 end
 
-local function handle_buildable_destruction(obj_name, normalized_text)       
+local function handle_buildable_destruction(obj_name, normalized_text)
     local destroyer_guid, valid_destroyer_found = handle_destroyer_attribution(obj_name)
-    
+
     if valid_destroyer_found and destroyer_guid then
         record_obj_stat(destroyer_guid, "obj_destroyed", obj_name, trap_Milliseconds())
         log(string.format("Destruction: %s by %s", obj_name, destroyer_guid))
@@ -1777,7 +1777,7 @@ local function check_recent_construction(obj_name, patterns, obj_config, current
     local matched = false
 
     -- First check current state
-    if objective_states[obj_name] and 
+    if objective_states[obj_name] and
        objective_states[obj_name].last_announce and
        (current_time - objective_states[obj_name].timestamp) < repair_buffer then
 
@@ -1786,7 +1786,7 @@ local function check_recent_construction(obj_name, patterns, obj_config, current
         -- Handle map-specific buildables
         if type(obj_config) == "table" and obj_config.construct_pattern then
             matched = string.match(normalize_key(last_announce), normalize_key(obj_config.construct_pattern)) ~= nil
-            log(string.format("Map-specific pattern check for %s: '%s' against '%s' = %s", 
+            log(string.format("Map-specific pattern check for %s: '%s' against '%s' = %s",
                 obj_name,
                 normalize_key(last_announce),
                 normalize_key(obj_config.construct_pattern),
@@ -1829,14 +1829,14 @@ end
 -- clear previous objective entries
 local function clear_previous_objective_entries(guid, objective_name, timestamp)
     if not objstats[guid] then return end
-    
+
     local new_taken = {}
     for entry_timestamp, obj in pairs(objstats[guid].obj_taken or {}) do
         if obj ~= objective_name or entry_timestamp >= timestamp then
             new_taken[entry_timestamp] = obj
         end
     end
-    
+
     if objstats[guid].obj_taken then
         objstats[guid].obj_taken = new_taken
     end
@@ -1851,10 +1851,10 @@ end
 
 local function getEntityCoordinates(entityId)
     if not entityId then return nil end
-    
+
     local origin = et.gentity_get(entityId, "origin")
     if not origin then return nil end
-    
+
     -- Format coordinates as string
     return string.format("%d %d %d", origin[1], origin[2], origin[3])
 end
@@ -1862,7 +1862,7 @@ end
 -- Function to find and get flag coordinates
 local function getFlagCoordinates()
     local flags = {}
-    
+
     -- Scan through possible entity IDs
     for i = 64, 1021 do
         local classname = et.gentity_get(i, "classname")
@@ -1882,7 +1882,7 @@ local function getFlagCoordinates()
             end
         end
     end
-    
+
     return flags
 end
 
@@ -1895,9 +1895,9 @@ end
 -- find all players near obj coordinates
 local function find_nearest_players(coordinates, team)
     local coord_table = parse_coordinates(coordinates)
-    if not coord_table then 
+    if not coord_table then
         log("Failed to parse coordinates: " .. tostring(coordinates))
-        return nil 
+        return nil
     end
 
     local nearest_players = {}
@@ -1908,12 +1908,12 @@ local function find_nearest_players(coordinates, team)
         if client and client.team == team then
             local health = tonumber(gentity_get(clientNum, "health"))
             local body = tonumber(gentity_get(clientNum, "r.contents"))
-            
+
             if health > 0 or (health <= 0 and body == 67108864) then
                 local origin = gentity_get(clientNum, "r.currentOrigin")
                 if origin then
                     local distance = calculate_distance(coord_table, origin)
-                
+
                     if distance <= MAX_OBJ_DISTANCE then
                         if distance < nearest_distance then
                             nearest_distance = distance
@@ -1952,9 +1952,9 @@ function et_Print(text)
 
             if map_config.buildables then
                 for obj_name, obj_config in pairs(map_config.buildables) do
-                    if type(obj_config) == "table" and 
-                       obj_config.destruct_pattern and 
-                       obj_config.destruct_pattern ~= "" and 
+                    if type(obj_config) == "table" and
+                       obj_config.destruct_pattern and
+                       obj_config.destruct_pattern ~= "" and
                        string.find(normalized_text, normalize_key(obj_config.destruct_pattern)) then
                         handle_buildable_destruction(obj_name, normalized_text)
                         break
@@ -1974,8 +1974,8 @@ function et_Print(text)
 
         -- Process common buildables
         for obj_name, common_config in pairs(common_buildables) do
-            if map_config.buildables[obj_name] and 
-               type(map_config.buildables[obj_name]) == "table" and 
+            if map_config.buildables[obj_name] and
+               type(map_config.buildables[obj_name]) == "table" and
                map_config.buildables[obj_name].enabled then
 
                 if match_any_pattern(normalized_text, common_config.patterns.construct) then
@@ -1991,15 +1991,15 @@ function et_Print(text)
         if map_config.buildables then
             for obj_name, obj_config in pairs(map_config.buildables) do
                 if type(obj_config) == "table" then
-                    if obj_config.construct_pattern and 
+                    if obj_config.construct_pattern and
                        obj_config.construct_pattern ~= "" and
                        string.find(normalized_text, normalize_key(obj_config.construct_pattern)) then
                         update_objective_state(obj_name, "constructed", nil, normalized_text)
                         log(string.format("Construction: %s", obj_name))
-                    elseif obj_config.destruct_pattern and 
+                    elseif obj_config.destruct_pattern and
                            obj_config.destruct_pattern ~= "" and
                            string.find(normalized_text, normalize_key(obj_config.destruct_pattern)) then
-                        if not (objective_states[obj_name] and 
+                        if not (objective_states[obj_name] and
                                objective_states[obj_name].last_action == "destroyed" and
                                (current_time - objective_states[obj_name].timestamp) < 1000) then
                             handle_buildable_destruction(obj_name, normalized_text)
@@ -2008,7 +2008,7 @@ function et_Print(text)
                 end
             end
         end
-        
+
         -- Process flag captures
         if map_config.flags then
             -- Check Allies flag capture
@@ -2026,7 +2026,7 @@ function et_Print(text)
                     end
                 end
             end
-        
+
             -- Check Axis flag capture
             if map_config.flags.axis_flag and
                string.find(normalized_text, normalize_key(map_config.flags.axis_flag.flag_pattern)) then
@@ -2094,7 +2094,7 @@ function et_Print(text)
                     objective_states[obj.name].timestamp = trap_Milliseconds()
                     break
                 elseif string.find(normalized_text, normalize_key(obj.return_pattern)) then
-                    local returner_guid = objective_states[obj.name].carrier_id and 
+                    local returner_guid = objective_states[obj.name].carrier_id and
                                         clientGuids[objective_states[obj.name].carrier_id] or "WORLD"
 
                     record_obj_stat(returner_guid, "obj_returned", obj.name, trap_Milliseconds())
@@ -2116,10 +2116,10 @@ function et_Print(text)
         if id and event_text then
             local guid = clientGuids[tonumber(id)]
             local normalized_text = normalize_key(event_text:match("^%s*(.-)%s*$"))
-    
+
             -- Check common buildables first
             for obj_name, common_config in pairs(common_buildables) do
-                if map_config.buildables[obj_name] and 
+                if map_config.buildables[obj_name] and
                    match_any_pattern(normalized_text, common_config.patterns.plant) then
                     record_obj_stat(guid.guid, "obj_" .. action_name, obj_name, trap_Milliseconds())
                     log(string.format("%s: %s by %s", action_name, obj_name, guid.guid))
@@ -2127,11 +2127,11 @@ function et_Print(text)
                     return
                 end
             end
-    
+
             -- Then check map-specific buildables
             for obj_name, obj_config in pairs(map_config.buildables) do
-                if type(obj_config) ~= "boolean" and 
-                   obj_config.plant_pattern and 
+                if type(obj_config) ~= "boolean" and
+                   obj_config.plant_pattern and
                    obj_config.plant_pattern ~= "" and
                    string.find(normalized_text, normalize_key(obj_config.plant_pattern)) then
                     record_obj_stat(guid.guid, "obj_" .. action_name, obj_name, trap_Milliseconds())
@@ -2158,18 +2158,18 @@ function et_Print(text)
             local current_time = trap_Milliseconds()
             -- Check common buildables first
             for obj_name, common_config in pairs(common_buildables) do
-                if map_config.buildables[obj_name] and 
+                if map_config.buildables[obj_name] and
                    check_recent_construction(obj_name, common_config.patterns, map_config.buildables[obj_name], current_time) then
                     objective_name = obj_name
                     break
                 end
             end
-    
+
             -- Only check map-specific if no common match
             if objective_name == "Unknown Repair" then
                 for obj_name, obj_config in pairs(map_config.buildables) do
-                    if type(obj_config) == "table" and 
-                       obj_config.construct_pattern and 
+                    if type(obj_config) == "table" and
+                       obj_config.construct_pattern and
                        obj_config.construct_pattern ~= "" and
                        check_recent_construction(obj_name, nil, obj_config, current_time) then
                         objective_name = obj_name
@@ -2182,13 +2182,13 @@ function et_Print(text)
     end
 
     -- Handle flag/item pickups
-    if string.find(text, "Item:") and 
+    if string.find(text, "Item:") and
        (string.find(text, "team_CTF_redflag") or string.find(text, "team_CTF_blueflag")) then
         local id = tonumber(string.match(text, "Item: (%d+)"))
         if id then
             for _, obj in pairs(map_config.objectives) do
-                if objective_states[obj.name] and 
-                   objective_states[obj.name].last_popup and 
+                if objective_states[obj.name] and
+                   objective_states[obj.name].last_popup and
                    (trap_Milliseconds() - objective_states[obj.name].timestamp) < 1000 then
                     local normalized_popup = normalize_key(strip_colors(objective_states[obj.name].last_popup))
 
@@ -2197,7 +2197,7 @@ function et_Print(text)
                         if client then
                             record_obj_stat(client.guid, "obj_taken", obj.name, trap_Milliseconds())
                             log(string.format("Steal: %s by %s", obj.name, client.guid))
-    
+
                             objective_carriers.players[id] = obj.name
                             objective_states[obj.name].carrier_id = id
                             if not contains(objective_carriers.ids, id) then
@@ -2212,8 +2212,8 @@ function et_Print(text)
     end
 
     -- Handle objective securing
-    if string.find(text, "secure") or string.find(text, "escap") or 
-       string.find(text, "transmit") or string.find(text, "capture") or 
+    if string.find(text, "secure") or string.find(text, "escap") or
+       string.find(text, "transmit") or string.find(text, "capture") or
        string.find(text, "transport") then
         local normalized_text = normalize_key(strip_colors(text))
         local first_sentence = normalized_text:match("[^.]+")
@@ -2255,7 +2255,7 @@ function et_Print(text)
             local shover_guid = clientGuids[tonumber(shover)].guid
             local target_guid = clientGuids[tonumber(target)].guid
             local timestamp = trap_Milliseconds()
-            
+
             if shover_guid and target_guid then
                 record_obj_stat(shover_guid, "shoves_given", target_guid, timestamp)
                 record_obj_stat(target_guid, "shoves_received", shover_guid, timestamp)
@@ -2278,24 +2278,24 @@ local SANITIZE_PATTERNS = {
 
 local function sanitizeData(data, maxLength)
     maxLength = maxLength or 256
-    
+
     local dataType = type(data)
-    
+
     if dataType == "string" then
         -- First handle the basic escapes
         local sanitized = data:gsub('["\'\n\r\t%z%c]', SANITIZE_PATTERNS)
-        
+
         -- Then handle non-ASCII characters
         sanitized = sanitized:gsub('[^%g%s]', function(c)
             -- Convert any non-ASCII character to \u{hex} format
             return string.format('\\u{%x}', string.byte(c))
         end)
-        
+
         if #sanitized > maxLength then
             return sanitized:sub(1, maxLength) .. "..."
         end
         return sanitized
-        
+
     elseif dataType == "table" then
         local sanitized = {}
         for k, v in pairs(data) do
@@ -2303,10 +2303,10 @@ local function sanitizeData(data, maxLength)
             sanitized[sanitizedKey] = sanitizeData(v, maxLength)
         end
         return sanitized
-        
+
     elseif dataType == "number" or dataType == "boolean" then
         return data
-        
+
     else
         return ""
     end
@@ -2364,12 +2364,12 @@ local function initializeServerInfo()
     local base_mapname = get_base_map_name(full_mapname)
     local round = tonumber(et.trap_Cvar_Get("g_currentRound")) == 0 and 1 or 2
     local et_version = et.trap_Cvar_Get("mod_version")
-    
+
     -- Find matching map configuration
     local found_config = false
     for config_name, config in pairs(map_configs) do
         local base_config_name = get_base_map_name(config_name)
-        
+
         if base_mapname == base_config_name then
             mapname = config_name  -- Use the config's canonical name
             found_config = true
@@ -2382,7 +2382,7 @@ local function initializeServerInfo()
     if map_config then
         -- Collect all objectives first
         local all_objectives = {}
-        
+
         -- Initialize objective states
         if map_config.objectives then
             for _, obj in ipairs(map_config.objectives) do
@@ -2397,7 +2397,7 @@ local function initializeServerInfo()
                 table.insert(all_objectives, obj.name)
             end
         end
-        
+
         -- Initialize buildables
         if map_config.buildables then
             for obj_name, obj_config in pairs(map_config.buildables) do
@@ -2418,8 +2418,8 @@ local function initializeServerInfo()
                 for flag_name, flag_data in pairs(dynamic_flags) do
                     if map_config.flags[flag_name] then
                         map_config.flags[flag_name].flag_coordinates = flag_data.flag_coordinates
-                        log(string.format("Updated %s coordinates to: %s", 
-                            flag_name, 
+                        log(string.format("Updated %s coordinates to: %s",
+                            flag_name,
                             flag_data.flag_coordinates))
                         table.insert(all_objectives, "flag_" .. flag_name)
                     end
@@ -2446,10 +2446,10 @@ local function initializeServerInfo()
         log(string.format("ET:Legacy Version: %s", et_version))
         log(string.format("Server: %s:%s", server_ip, server_port))
         log(string.format("Map: %s, Round: %d", full_mapname, round))
-        
+
         if found_config then
             log(string.format("Map config loaded: %s (base: %s)", mapname, base_mapname))
-            
+
             -- Log all objectives
             if #all_objectives > 0 then
                 log(string.format("Map Objectives: %s", table.concat(all_objectives, ", ")))
@@ -2460,7 +2460,7 @@ local function initializeServerInfo()
     else
         log(string.format("No config found for map: %s (base: %s)", full_mapname, base_mapname))
     end
-    
+
     return found_config
 end
 
@@ -2519,12 +2519,12 @@ function et_Obituary(target, attacker, meansOfDeath)
         local attackerRespawnTime = 0
 
         -- Only get respawn time for valid players
-        if attacker ~= 1022 and attacker >= 0 and attacker < maxClients then      
+        if attacker ~= 1022 and attacker >= 0 and attacker < maxClients then
             victimRespawnTime = calculateReinfTime(et.gentity_get(attacker, "sess.sessionTeam"))
         end
 
         if target >= 0 and target < maxClients then
-            attackerRespawnTime = calculateReinfTime(et.gentity_get(target, "sess.sessionTeam"))        
+            attackerRespawnTime = calculateReinfTime(et.gentity_get(target, "sess.sessionTeam"))
         end
 
         table_insert(obituaries, {
@@ -2618,7 +2618,7 @@ local function getAllHitRegions(clientNum)
         end)
         -- If we can't get the hit region count, default to 0
         regions[hitType] = (success and count) or 0
-    end       
+    end
     return regions
 end
 
@@ -2630,7 +2630,7 @@ local function getHitRegion(clientNum)
 
     -- Get current hit regions
     local playerHitRegions = getAllHitRegions(clientNum)
-    
+
     -- Initialize hit regions data if not exists
     if not hitRegionsStats[clientNum] then
         hitRegionsStats[clientNum] = playerHitRegions
@@ -2642,7 +2642,7 @@ local function getHitRegion(clientNum)
         if playerHitRegions[hitType] > (hitRegionsStats[clientNum][hitType] or 0) then
             hitRegionsStats[clientNum] = playerHitRegions
             return hitType
-        end     
+        end
     end
 
     -- Update stored hit regions and return no hit
@@ -2653,7 +2653,7 @@ end
 -- Capture damage events
 function et_Damage(target, attacker, damage, damageFlags, meansOfDeath)
     if not configuration.collect_damageStats then return end
-    
+
     local hitRegion = getHitRegion(attacker)
     table_insert(damageStats, {
         timestamp = trap_Milliseconds(),
@@ -2710,7 +2710,7 @@ function StoreStats()
 				local xp                 = gentity_get(i, "ps.persistant", PERS_SCORE)
 
 				timePlayed               = timeAxis + timeAllies == 0 and 0 or (100.0 * timePlayed / (timeAxis + timeAllies))
-				
+
 				stats[guid] = string.format("%s\\%s\\%d\\%d\\%d%s", string.sub(guid, 1, 8), name, rounds, team, dwWeaponMask, weaponStats)
 				stats[guid] = string.format("%s %d %d %d %d %d %d %d %d %0.1f %d\n", stats[guid], damageGiven, damageReceived, teamDamageGiven, teamDamageReceived, gibs, selfkills, teamkills, teamgibs, timePlayed, xp)
 			end
@@ -2870,7 +2870,7 @@ function SaveStats()
         configuration.api_url_submit
     )
 
-    local success, message = executeCurlCommandAsync(curl_cmd, json_str)    
+    local success, message = executeCurlCommandAsync(curl_cmd, json_str)
 
     if success then
         log("Stats submission started")
@@ -2889,10 +2889,10 @@ function SaveStats()
             if not string.match(configuration.json_filepath, "/$") then
                 configuration.json_filepath = configuration.json_filepath .. "/"
             end
-            local json_file = configuration.json_filepath .. string.format("gamestats-%s-%s%s-round-%d.json", 
-                matchID, 
-                os.date('%Y-%m-%d-%H%M%S-'), 
-                mapname, 
+            local json_file = configuration.json_filepath .. string.format("gamestats-%s-%s%s-round-%d.json",
+                matchID,
+                os.date('%Y-%m-%d-%H%M%S-'),
+                mapname,
                 round
             )
 
@@ -2915,7 +2915,7 @@ function et_RunFrame(gameFrameLevelTime)
     handle_gamestate_change(gamestate)
 
     levelTime = gameFrameLevelTime
-    
+
     if configuration.collect_movement_stats or configuration.collect_stance_stats then
         trackPlayerStanceAndMovement(gameFrameLevelTime)
     end
@@ -2960,26 +2960,26 @@ local function validateConfiguration()
         log("Configuration error: Invalid or missing API token")
         return false, "Invalid or missing API token"
     end
-    
+
     -- Check matchid URL
-    if not configuration.api_url_matchid or 
-       not configuration.api_url_matchid:match("^https?://") or 
+    if not configuration.api_url_matchid or
+       not configuration.api_url_matchid:match("^https?://") or
        configuration.api_url_matchid:match("^%%.*%%$") then
         log("Configuration error: Invalid matchid API URL")
         return false, "Invalid matchid API URL"
     end
-    
+
     -- Check submit URL
-    if not configuration.api_url_submit or 
-       not configuration.api_url_submit:match("^https?://") or 
+    if not configuration.api_url_submit or
+       not configuration.api_url_submit:match("^https?://") or
        configuration.api_url_submit:match("^%%.*%%$") then
         log("Configuration error: Invalid submit API URL")
         return false, "Invalid submit API URL"
     end
 
     if configuration.version_check then
-        if not configuration.api_url_version or 
-           not configuration.api_url_version:match("^https?://") or 
+        if not configuration.api_url_version or
+           not configuration.api_url_version:match("^https?://") or
            configuration.api_url_version:match("^%%.*%%$") then
             log("Configuration error: Invalid version API URL")
             return false, "Invalid version API URL"
@@ -2991,17 +2991,17 @@ local function validateConfiguration()
         log("Configuration error: map_configs is nil")
         return false, "No map configuration found"
     end
-    
+
     if table_count(map_configs) == 0 then
         log("Configuration error: No map configurations loaded")
         return false, "No map configurations loaded"
     end
-    
+
     if not common_buildables or not next(common_buildables) then
         log("Configuration error: No common buildables configuration")
         return false, "No common buildables configuration loaded"
     end
-    
+
     return true
 end
 
@@ -3014,7 +3014,7 @@ function et_InitGame()
         et.G_Print(string.format("\n%s Configuration Error: %s\n", modname, error_message))
         return
     end
-    
+
     local init_success = initializeServerInfo()
     lastFrameTime = et.trap_Milliseconds()
     current_gamestate = tonumber(et.trap_Cvar_Get("gamestate")) or -1
@@ -3029,8 +3029,8 @@ function et_InitGame()
         loadTeamDataFromFile()
     end
 
-    if configuration.force_names and 
-       (current_gamestate == et.GS_WARMUP or current_gamestate == et.GS_WARMUP_COUNTDOWN) and 
+    if configuration.force_names and
+       (current_gamestate == et.GS_WARMUP or current_gamestate == et.GS_WARMUP_COUNTDOWN) and
        configuration.api_url_matchid and configuration.api_token then
         log(string.format("Gamestate %d, fetching match ID", current_gamestate))
         local match_id = fetchMatchIDFromAPI()
@@ -3059,10 +3059,10 @@ function et_InitGame()
             end
         end
     end
-    
+
     log(string.rep("-", 50))
-    log(string.format("%s v%s initialized %s (force_names: %s)", 
-        modname, version, 
+    log(string.format("%s v%s initialized %s (force_names: %s)",
+        modname, version,
         init_success and "successfully" or "with warnings",
         configuration.force_names and "enabled" or "disabled"))
 end
