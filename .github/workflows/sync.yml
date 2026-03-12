@@ -33,30 +33,61 @@ jobs:
 
       - name: Sync changes
         run: |
-          # Create and checkout a new temporary branch from etl-stats-api
           git checkout etl-stats-api
+
+          # Phase 1: save lua_modules lines from etl-stats-api before merge
+          mkdir -p /tmp/lua_modules_backup
+          for f in configs/*.config; do
+            [ -f "$f" ] || continue
+            line=$(grep "^[[:space:]]*setl[[:space:]]*lua_modules" "$f" 2>/dev/null || true)
+            [ -n "$line" ] && printf '%s' "$line" > "/tmp/lua_modules_backup/$(basename "$f")"
+          done
+
           git checkout -b temp-sync-branch
-          
-          # Try to merge main branch
+
+          # Phase 2: merge main, resolving all conflicts by taking theirs
           if ! git merge origin/main -m "Sync: Merge changes from main branch"; then
-            echo "Merge conflicts detected. Resolving..."
-            
-            # For each conflicted file
-            git diff --name-only --diff-filter=U | while read -r file; do
-              if [[ "$file" =~ ^configs/.*\.config$ ]]; then
-                # For config files, take main's version but remove lua_modules lines
-                git checkout --theirs "$file"
-                echo "Processing config file: $file"
-                grep -v "^[[:space:]]*setl[[:space:]]*lua_modules" "$file" > "$file.tmp"
-                mv "$file.tmp" "$file"
-              else
-                git checkout --theirs "$file"
-              fi
+            echo "Merge conflicts detected. Resolving by taking main's version..."
+            while IFS= read -r file; do
+              git checkout --theirs "$file"
               git add "$file"
-            done
-            
-            # Complete the merge
+            done < <(git diff --name-only --diff-filter=U)
             git commit -m "Sync: Merge changes from main branch (with conflict resolution)"
+          fi
+
+          # Phase 3: restore lua_modules lines (runs unconditionally after merge)
+          any_restored=false
+          for f in configs/*.config; do
+            [ -f "$f" ] || continue
+            backup="/tmp/lua_modules_backup/$(basename "$f")"
+            [ -f "$backup" ] || continue
+            python3 - "$f" "$backup" << 'PYEOF'
+          import sys, re
+          config_path, backup_path = sys.argv[1], sys.argv[2]
+          with open(backup_path) as b:
+              original = b.read().rstrip('\n')
+          with open(config_path) as f:
+              lines = f.readlines()
+          lua_re = re.compile(r'^\s*setl\s+lua_modules')
+          if any(lua_re.match(l) for l in lines):
+              lines = [original + '\n' if lua_re.match(l) else l for l in lines]
+          else:
+              comment_re = re.compile(r'disable wolfadmin|enable custom Lua', re.IGNORECASE)
+              new_lines = []
+              for l in lines:
+                  new_lines.append(l)
+                  if comment_re.search(l):
+                      new_lines.append(original + '\n')
+              lines = new_lines
+          with open(config_path, 'w') as f:
+              f.writelines(lines)
+          PYEOF
+            git add "$f"
+            any_restored=true
+          done
+
+          if [ "$any_restored" = true ] && ! git diff --cached --quiet; then
+            git commit -m "Preserve lua_modules settings for etl-stats-api branch"
           fi
 
       - name: Push changes
