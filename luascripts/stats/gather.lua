@@ -27,6 +27,13 @@ local api_ref
 local _auto_rename              = false
 local _auto_sort                = false
 local _auto_start               = false
+local _auto_map                 = false
+local _auto_config              = false
+local _eff_rename               = false  -- _auto_rename  AND match_data.auto_rename
+local _eff_sort                 = false  -- _auto_sort    AND match_data.auto_sort
+local _eff_start                = false  -- _auto_start   AND match_data.auto_start
+local _eff_map                  = false  -- _auto_map     AND match_data.auto_map
+local _eff_config               = false  -- _auto_config  AND route data present
 local _maxClients               = 24
 local _log_level                = "info"
 local _start_wait_initial       = 420   -- map 1 round 1
@@ -92,6 +99,13 @@ function gather.init(cfg, log_ref, http_module, api_module)
     _auto_rename        = cfg.auto_rename     or false
     _auto_sort          = cfg.auto_sort       or false
     _auto_start         = cfg.auto_start      or false
+    _auto_map           = cfg.auto_map        or false
+    _auto_config        = cfg.auto_config     or false
+    _eff_rename         = false
+    _eff_sort           = false
+    _eff_start          = false
+    _eff_map            = false
+    _eff_config         = false
     _auto_config_map    = cfg.auto_config_map or {}
     _maxClients         = cfg.maxClients      or 24
     _log_level          = cfg.api_log_level or cfg.log_level or "info"
@@ -143,6 +157,11 @@ function gather.reset_team_data()
     _route_match_id       = nil
     _match_extra           = {}
     _match_data_stale      = true
+    _eff_rename            = false
+    _eff_sort              = false
+    _eff_start             = false
+    _eff_map               = false
+    _eff_config            = false
 end
 
 
@@ -315,17 +334,6 @@ function gather.on_team_data_fetched(match_id, match_data)
     _team_data_fetched = true
     _match_data_stale  = false
 
-    if not had_names and _team_names_cache.alpha_teamname and _auto_rename then
-        for clientNum = 0, _maxClients - 1 do
-            if et.gentity_get(clientNum, "pers.connected") == CON_CONNECTED then
-                local sessionTeam = tonumber(et.gentity_get(clientNum, "sess.sessionTeam")) or 0
-                if sessionTeam == 1 or sessionTeam == 2 then
-                    gather.enforce_player_name(clientNum, 200)
-                end
-            end
-        end
-    end
-
     _match_extra = {
         auto_rename     = match_data.auto_rename     or false,
         auto_sort       = match_data.auto_sort       or false,
@@ -338,10 +346,32 @@ function gather.on_team_data_fetched(match_id, match_data)
         server_config   = match_data.server_config   or nil,
     }
 
+    -- Static master enable AND match_data must both be true.
+    -- _eff_config requires roster players (alpha+beta > 0) to distinguish gather matches
+    -- from non-gather routes that carry no team data.
+    local _cfg_alpha = match_data.alpha_team and #match_data.alpha_team or 0
+    local _cfg_beta  = match_data.beta_team  and #match_data.beta_team  or 0
+    _eff_rename = _auto_rename and _match_extra.auto_rename
+    _eff_sort   = _auto_sort   and _match_extra.auto_sort
+    _eff_start  = _auto_start  and _match_extra.auto_start
+    _eff_map    = _auto_map    and _match_extra.auto_map
+    _eff_config = _auto_config and (_cfg_alpha + _cfg_beta) > 0
+
+    if not had_names and _team_names_cache.alpha_teamname and _eff_rename then
+        for clientNum = 0, _maxClients - 1 do
+            if et.gentity_get(clientNum, "pers.connected") == CON_CONNECTED then
+                local sessionTeam = tonumber(et.gentity_get(clientNum, "sess.sessionTeam")) or 0
+                if sessionTeam == 1 or sessionTeam == 2 then
+                    gather.enforce_player_name(clientNum, 200)
+                end
+            end
+        end
+    end
+
     local current_gs = tonumber(et.trap_Cvar_Get("gamestate")) or -1
     if current_gs == et.GS_WARMUP then
 
-        if _match_extra.auto_map and not _server_config_applied and _initial_round == 0 then
+        if _eff_config and not _server_config_applied and _initial_round == 0 then
             local alpha_count = match_data.alpha_team and #match_data.alpha_team or 0
             local beta_count  = match_data.beta_team  and #match_data.beta_team  or 0
             local total       = alpha_count + beta_count
@@ -391,8 +421,8 @@ function gather.get_match_extra()          return _match_extra        end
 function gather.get_team_data()            return _team_data_cache   end
 function gather.mark_stale()               _match_data_stale = true  end
 function gather.is_match_data_stale()      return _match_data_stale  end
-function gather.is_auto_rename_enabled()   return _auto_rename       end
-function gather.any_auto_feature_enabled() return _auto_rename or _auto_sort or _auto_start end
+function gather.is_auto_rename_enabled()   return _eff_rename                          end
+function gather.any_auto_feature_enabled() return _eff_rename or _eff_sort or _eff_start end
 
 function gather.is_team_data_available()
     return _team_data_fetched
@@ -502,7 +532,7 @@ end
 
 
 function gather.enforce_player_name(clientNum, delay_ms)
-    if not _auto_rename then return end
+    if not _eff_rename then return end
     if not gather.is_team_data_available() then return end
     if _rename_in_progress[clientNum] then return end
 
@@ -535,7 +565,7 @@ end
 
 
 function gather.on_userinfo_changed(clientNum, current_gamestate)
-    if not _auto_rename then return end
+    if not _eff_rename then return end
     if _rename_in_progress[clientNum] then
         _rename_in_progress[clientNum] = nil
         if log then log.debug(string.format("Rename completed: player %d", clientNum)) end
@@ -551,8 +581,8 @@ function gather.on_disconnect(clientNum)
     _player_ready_status[clientNum] = nil
     _rename_in_progress[clientNum]  = nil
 
-    if not _auto_start then return end
-    if not (_match_extra and _match_extra.auto_start and _match_extra.scheduled_start) then return end
+    if not _eff_start then return end
+    if not (_match_extra and _match_extra.scheduled_start) then return end
 
     local now       = os.time()
     local scheduled = _match_extra.scheduled_start
@@ -573,7 +603,7 @@ end
 
 
 function gather.validate_all_players()
-    if not _auto_rename or not gather.is_team_data_available() then return end
+    if not _eff_rename or not gather.is_team_data_available() then return end
     if log then log.debug("Mass name validation") end
 
     local spectator_teamname = _team_data_cache and _team_data_cache.spectator_teamname
@@ -599,7 +629,7 @@ end
 
 
 function gather.check_all_players_names_gameplay(current_time)
-    if not _auto_rename then return end
+    if not _eff_rename then return end
     if current_time < _last_name_check_time + TEAM_DATA_CHECK_INTERVAL then return end
     _last_name_check_time = current_time
 
@@ -620,9 +650,9 @@ end
 function gather.check_player_ready_status(api_module)
     if not (_auto_rename or _auto_sort or _auto_start) then return end
 
-    -- If auto_rename is enabled but match data doesn't have names yet (phase 1 only has
-    -- id+GUID; names arrive at WAITING_REPORT), stay stale to keep re-polling.
-    if _auto_rename and not (_match_extra and _match_extra.auto_rename) then
+    -- If static rename is on and match data says rename, but names haven't arrived yet
+    -- (Phase 2 / WAITING_REPORT pending), keep polling until they do.
+    if _auto_rename and _match_extra.auto_rename and not _team_names_cache.alpha_teamname then
         _match_data_stale = true
     end
 
@@ -676,16 +706,14 @@ end
 function gather.assign_team_on_connect(clientNum, current_gs)
     if current_gs ~= et.GS_WARMUP then return end
 
-    -- If auto_rename is on but names haven't arrived yet (Phase 2 pending),
-    -- use each player connect as a trigger to re-poll
-    if _auto_rename and not gather.is_team_data_available() then
+    -- If static rename is on and route confirms rename, re-poll on connect until names arrive.
+    if _auto_rename and _match_extra.auto_rename and not gather.is_team_data_available() then
         if log then log.write(string.format(
             "client %d connected while names stale — re-polling API", clientNum)) end
         if api_ref then api_ref.fetch_match_id() end
     end
 
-    if not _auto_sort then return end
-    if not (_match_extra and _match_extra.auto_sort) then return end
+    if not _eff_sort then return end
     if not _team_data_fetched then return end
 
     local current_team = tonumber(et.gentity_get(clientNum, "sess.sessionTeam")) or 0
@@ -870,9 +898,9 @@ end
 
 
 function gather.on_player_connect(clientNum, current_gs)
-    if not _auto_start then return end
+    if not _eff_start then return end
     if current_gs ~= et.GS_WARMUP then return end
-    if not (_match_extra and _match_extra.auto_start and _match_extra.scheduled_start) then return end
+    if not (_match_extra and _match_extra.scheduled_start) then return end
 
     local now       = os.time()
     local scheduled = _match_extra.scheduled_start
@@ -1065,7 +1093,7 @@ end
 -- Called by gamestate on GS_INTERMISSION
 -- Schedules a map switch only after round 2 completes (g_currentRound == 1).
 function gather.on_intermission()
-    if not (_match_extra and _match_extra.auto_map) then return end
+    if not _eff_map then return end
     local maps = _match_extra.maps
     if not maps or #maps < 2 then return end
 

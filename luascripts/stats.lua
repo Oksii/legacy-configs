@@ -40,6 +40,7 @@ local AUTO_SORT                 = false  -- assign players to teams on connect v
 local AUTO_START                = false  -- foce game start via AUTO_START_WAIT and AUTO_START_WAIT_INITIAL
 local AUTO_RENAME               = false  -- enforce team names via API
 local AUTO_MAP                  = false  -- switch to next map in rotation after round 2 intermission
+local AUTO_CONFIG               = false  -- apply server config (ref config) based on player count at match start
 local VERSION_CHECK             = true
 
 -- [AUTO-CONFIG MAP] player count → server config name
@@ -92,6 +93,7 @@ AUTO_RENAME                     = env_bool("STATS_AUTO_RENAME",         AUTO_REN
 AUTO_SORT                       = env_bool("STATS_AUTO_SORT",           AUTO_SORT)
 AUTO_START                      = env_bool("STATS_AUTO_START",          AUTO_START)
 AUTO_MAP                        = env_bool("STATS_AUTO_MAP",            AUTO_MAP)
+AUTO_CONFIG                     = env_bool("STATS_AUTO_CONFIG",         AUTO_CONFIG)
 VERSION_CHECK                   = env_bool("STATS_API_VERSION_CHECK",   VERSION_CHECK)
 AUTO_CONFIG_MAP[2]              = os.getenv("STATS_AUTO_CONFIG_2")  or AUTO_CONFIG_MAP[2]
 AUTO_CONFIG_MAP[4]              = os.getenv("STATS_AUTO_CONFIG_4")  or AUTO_CONFIG_MAP[4]
@@ -100,6 +102,16 @@ AUTO_CONFIG_MAP[10]             = os.getenv("STATS_AUTO_CONFIG_10") or AUTO_CONF
 AUTO_CONFIG_MAP[12]             = os.getenv("STATS_AUTO_CONFIG_12") or AUTO_CONFIG_MAP[12]
 AUTO_START_WAIT_INITIAL         = tonumber(os.getenv("STATS_AUTO_START_WAIT_INITIAL")) or AUTO_START_WAIT_INITIAL
 AUTO_START_WAIT                 = tonumber(os.getenv("STATS_AUTO_START_WAIT"))         or AUTO_START_WAIT
+
+-- STATS_GATHER_FEATURES=true enables all gather features at once.
+-- Individual flags still apply when this is unset or false.
+if env_bool("STATS_GATHER_FEATURES", false) then
+    AUTO_RENAME = true
+    AUTO_SORT   = true
+    AUTO_START  = true
+    AUTO_MAP    = true
+    AUTO_CONFIG = true
+end
 
 -- [SUB-MODULES]
 local function gs_require(mod)
@@ -153,6 +165,7 @@ local function build_cfg()
         auto_sort               = AUTO_SORT,
         auto_start              = AUTO_START,
         auto_map                = AUTO_MAP,
+        auto_config             = AUTO_CONFIG,
         auto_config_map         = AUTO_CONFIG_MAP,
         start_wait_initial      = AUTO_START_WAIT_INITIAL,
         start_wait              = AUTO_START_WAIT,

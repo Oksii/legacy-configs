@@ -593,11 +593,12 @@ non-gather matches.
 | `AUTO_SORT` | `false` | Assign connecting spectators to their roster team during GS_WARMUP only. Never moves players already in team 1 or 2. |
 | `AUTO_START` | `false` | Countdown to `scheduled_start` from match data and force-start via `ref allready`. Includes a late-join 5-second countdown if all players arrive after the scheduled time. |
 | `AUTO_MAP` | `false` | Automatically switch to the next map in the match rotation after round 2 intermission ends. |
+| `AUTO_CONFIG` | `false` | Apply server config via `ref config <name>` based on roster player count at map 1 round 1 warmup. |
 | `VERSION_CHECK` | `true` | Check `API_URL_VERSION` at startup and broadcast a chat warning if outdated |
 
 ### [AUTO-CONFIG MAP]
 
-Maps total registered player count to a server config name, applied once via `ref config <name>` at the start of map 1 round 1 warmup. Resolution selects the smallest threshold that is ≥ the actual player count.
+Maps total registered player count to a server config name, applied once via `ref config <name>` at the start of map 1 round 1 warmup. `AUTO_CONFIG` must be enabled. Resolution selects the smallest threshold that is ≥ the actual player count.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -644,10 +645,12 @@ silently ignored and the defaults above apply.
 | `STATS_API_WEAPON_FIRE` | `COLLECT_WEAPON_FIRE` |
 | `STATS_API_DUMPJSON` | `DUMP_STATS_DATA` |
 | `STATS_SUBMIT` | `SUBMIT_TO_API` |
+| `STATS_GATHER_FEATURES` | Shortcut: sets all five gather flags (`AUTO_RENAME`, `AUTO_SORT`, `AUTO_START`, `AUTO_MAP`, `AUTO_CONFIG`) to `true` when `"true"`. Individual flags still apply when unset or `"false"`. |
 | `STATS_AUTO_RENAME` | `AUTO_RENAME` |
 | `STATS_AUTO_SORT` | `AUTO_SORT` |
 | `STATS_AUTO_START` | `AUTO_START` |
 | `STATS_AUTO_MAP` | `AUTO_MAP` |
+| `STATS_AUTO_CONFIG` | `AUTO_CONFIG` |
 | `STATS_AUTO_START_WAIT_INITIAL` | `AUTO_START_WAIT_INITIAL` |
 | `STATS_AUTO_START_WAIT` | `AUTO_START_WAIT` |
 | `STATS_AUTO_CONFIG_2` | `AUTO_CONFIG_MAP[2]` — server config name for ≤2-player matches |
