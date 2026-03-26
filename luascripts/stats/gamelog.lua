@@ -13,6 +13,8 @@
 
 local gamelog = {}
 
+local utils = require("luascripts/stats/util/utils")
+
 local _buffer                = {}  -- array of event tables
 local _enabled               = true
 local _round_start_unix_ms   = 0   -- os.time() * 1000 recorded at round_start
@@ -60,13 +62,6 @@ local function stance_of(snap)
     }
 end
 
-local function fmt_pos(pos)
-    return pos and string.format("%d %d %d",
-        math.floor(pos[1] + 0.5),
-        math.floor(pos[2] + 0.5),
-        math.floor(pos[3] + 0.5)) or nil
-end
-
 
 -- Kill
 function gamelog.kill(killer_snap, victim_snap, weapon, allies_alive, axis_alive, killer_reinf, victim_reinf)
@@ -76,10 +71,10 @@ function gamelog.kill(killer_snap, victim_snap, weapon, allies_alive, axis_alive
         weapon          = weapon,
         killer_health   = killer_snap and killer_snap.health,
         killer_class    = killer_snap and killer_snap.class,
-        killer_pos      = fmt_pos(killer_snap and killer_snap.pos),
+        killer_pos      = utils.fmt_pos(killer_snap and killer_snap.pos),
         killer_stance   = stance_of(killer_snap),
         victim_class    = victim_snap  and victim_snap.class,
-        victim_pos      = fmt_pos(victim_snap  and victim_snap.pos),
+        victim_pos      = utils.fmt_pos(victim_snap  and victim_snap.pos),
         victim_stance   = stance_of(victim_snap),
         allies_alive    = allies_alive,
         axis_alive      = axis_alive,
@@ -94,7 +89,7 @@ function gamelog.suicide(victim_snap, weapon)
         player        = victim_snap and victim_snap.guid,
         weapon        = weapon,
         victim_class  = victim_snap and victim_snap.class,
-        victim_pos    = fmt_pos(victim_snap and victim_snap.pos),
+        victim_pos    = utils.fmt_pos(victim_snap and victim_snap.pos),
         victim_stance = stance_of(victim_snap),
     })
 end
@@ -124,11 +119,11 @@ function gamelog.damage(killer_snap, victim_snap, damage, damage_flags, weapon, 
         hit_region      = hit_region,
         killer_health   = killer_snap and killer_snap.health,
         killer_class    = killer_snap and killer_snap.class,
-        killer_pos      = fmt_pos(killer_snap and killer_snap.pos),
+        killer_pos      = utils.fmt_pos(killer_snap and killer_snap.pos),
         killer_stance   = stance_of(killer_snap),
         victim_health   = victim_snap  and victim_snap.health,
         victim_class    = victim_snap  and victim_snap.class,
-        victim_pos      = fmt_pos(victim_snap  and victim_snap.pos),
+        victim_pos      = utils.fmt_pos(victim_snap  and victim_snap.pos),
         victim_stance   = stance_of(victim_snap),
     })
 end
@@ -181,7 +176,7 @@ function gamelog.weapon_fire(snap, weapon, pitch, yaw)
     gamelog.record("weapon_fire", "player", {
         player = snap and snap.guid,
         weapon = weapon,
-        pos    = fmt_pos(snap and snap.pos),
+        pos    = utils.fmt_pos(snap and snap.pos),
         pitch  = pitch,
         yaw    = yaw,
         stance = stance_of(snap),

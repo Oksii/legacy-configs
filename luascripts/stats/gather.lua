@@ -415,14 +415,7 @@ function gather.on_team_data_fetched(match_id, match_data)
 end
 
 
-function gather.get_team_names_cache()     return _team_names_cache  end
-function gather.get_team_data_cache()      return _team_data_cache   end
-function gather.get_match_extra()          return _match_extra        end
-function gather.get_team_data()            return _team_data_cache   end
-function gather.mark_stale()               _match_data_stale = true  end
-function gather.is_match_data_stale()      return _match_data_stale  end
-function gather.is_auto_rename_enabled()   return _eff_rename                          end
-function gather.any_auto_feature_enabled() return _eff_rename or _eff_sort or _eff_start end
+function gather.is_auto_rename_enabled()   return _eff_rename  end
 
 function gather.is_team_data_available()
     return _team_data_fetched

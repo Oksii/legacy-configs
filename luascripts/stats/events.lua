@@ -227,14 +227,6 @@ function events.on_client_command(clientNum, command)
 end
 
 
-local function fmt_pos(pos)
-    if not pos then return nil end
-    return string.format("%d %d %d",
-        math.floor(pos[1] + 0.5),
-        math.floor(pos[2] + 0.5),
-        math.floor(pos[3] + 0.5))
-end
-
 function events.on_weapon_fire(clientNum, weapon)
     if not _collect_weapon_fire or not gamelog_ref then return 0 end
 

@@ -136,17 +136,4 @@ function config.load()
     }, nil
 end
 
-function config.validate(cfg)
-    if not cfg then
-        return false, "config is nil"
-    end
-    if not cfg.map_configs or utils.table_count(cfg.map_configs) == 0 then
-        return false, "no map configurations loaded"
-    end
-    if not cfg.common_buildables or not next(cfg.common_buildables) then
-        return false, "no common buildables loaded"
-    end
-    return true
-end
-
 return config
