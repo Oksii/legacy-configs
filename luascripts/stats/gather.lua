@@ -341,19 +341,38 @@ function gather.on_team_data_fetched(match_id, match_data)
     local current_gs = tonumber(et.trap_Cvar_Get("gamestate")) or -1
     if current_gs == et.GS_WARMUP then
 
-        if not _server_config_applied and _initial_round == 0 then
+        if _match_extra.auto_map and not _server_config_applied and _initial_round == 0 then
             local alpha_count = match_data.alpha_team and #match_data.alpha_team or 0
             local beta_count  = match_data.beta_team  and #match_data.beta_team  or 0
             local total       = alpha_count + beta_count
-            local resolved    = resolve_server_config(total, _match_extra.server_config)
-            if resolved and resolved ~= "" then
+
+            -- Apply only if the server is empty (pre-connect) or the in-team count
+            -- matches the expected roster size. Mismatches suggest stale/wrong match data.
+            local connected_in_teams = 0
+            for cnum = 0, _maxClients - 1 do
+                if et.gentity_get(cnum, "pers.connected") == CON_CONNECTED then
+                    local t = tonumber(et.gentity_get(cnum, "sess.sessionTeam")) or 0
+                    if t == TEAM_AXIS or t == TEAM_ALLIES then
+                        connected_in_teams = connected_in_teams + 1
+                    end
+                end
+            end
+
+            local count_ok = connected_in_teams == 0 or connected_in_teams == total
+            local resolved = resolve_server_config(total, _match_extra.server_config)
+            if resolved and resolved ~= "" and count_ok then
                 _server_config_applied = true
                 if log then
                     log.write(string.format(
-                        "auto_config: %d players → applying '%s'", total, resolved))
+                        "auto_config: %d expected / %d connected → applying '%s'",
+                        total, connected_in_teams, resolved))
                 end
                 et.trap_SendConsoleCommand(et.EXEC_APPEND,
                     string.format("ref config %s\n", resolved))
+            elseif not count_ok and log then
+                log.write(string.format(
+                    "auto_config: skipped — %d connected but %d expected",
+                    connected_in_teams, total))
             end
         end
 
