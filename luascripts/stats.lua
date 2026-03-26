@@ -357,7 +357,7 @@ function et_InitGame()
             if cached[1] then api.cached_match_id = cached[1] end
         end
     elseif (current_gs == et.GS_WARMUP or current_gs == et.GS_WARMUP_COUNTDOWN)
-        and (AUTO_RENAME or AUTO_SORT or AUTO_START) then
+        and (AUTO_RENAME or AUTO_SORT or AUTO_START or AUTO_MAP or AUTO_CONFIG) then
         log_mod.write(string.format("Warmup (gs=%d) — fetching match data", current_gs))
         local mid = api.fetch_match_id()
         if mid then

@@ -232,6 +232,11 @@ function gather.load_team_data_from_file(cached_match_id_ref)
         _team_data_fetched = true
         if result.match_extra then
             _match_extra = result.match_extra
+            -- Re-derive effective flags; gather.init() reset them all to false.
+            _eff_rename = _auto_rename and (_match_extra.auto_rename or false)
+            _eff_sort   = _auto_sort   and (_match_extra.auto_sort   or false)
+            _eff_start  = _auto_start  and (_match_extra.auto_start  or false)
+            _eff_map    = _auto_map    and (_match_extra.auto_map    or false)
         end
         if log then
             log.write(string.format("Team data loaded from file — match_id: %s, alpha: %s, beta: %s",
@@ -371,7 +376,8 @@ function gather.on_team_data_fetched(match_id, match_data)
     local current_gs = tonumber(et.trap_Cvar_Get("gamestate")) or -1
     if current_gs == et.GS_WARMUP then
 
-        if _eff_config and not _server_config_applied and _initial_round == 0 then
+        local _live_round = tonumber(et.trap_Cvar_Get("g_currentRound")) or 0
+        if _eff_config and not _server_config_applied and _live_round == 0 then
             local alpha_count = match_data.alpha_team and #match_data.alpha_team or 0
             local beta_count  = match_data.beta_team  and #match_data.beta_team  or 0
             local total       = alpha_count + beta_count
