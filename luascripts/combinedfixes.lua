@@ -12,7 +12,7 @@ local ENABLE_DEFAULT_CLASS  = true
 
 -- [GUID BLOCKER]
 -- Block a specific GUID from joining teams. Will be moved to spectator and told to delete their etkey. 
--- This was needed for ETL LAN (2025) as users were using a shared guid. 
+-- This was needed for ETL (2025) LAN as users were using a shared guid. 
 -- Check only occurs during warmup (gamestate 2)
 local ENABLE_GUID_BLOCKER   = true
 local GUID_BLOCKER_TARGETS  = {
@@ -51,8 +51,11 @@ local BAN_REASON = "Banned."
 -- GUIDs blocked from calling votes
 -- Certain players just can't behave themselves and will spam call vote for surrender.
 local VOTE_BANNED_GUIDS = {
-    --["12345"] = true,
-    --["ABCDE"] = true,
+    ["2E2D30B37EA50338C0FA6A7237BE8315"] = true,    -- roltz
+    ["AB8139D583625DDC2D7CB966ECAB9E0C"] = true,    -- roltz
+    ["AB20CC32A12E9D295592BA81C5C7C457"] = true,    -- roltz
+    ["5911EB96C30C8E9B778CEFFECCBDC995"] = true,    -- roltz
+    ["836BF24C783B536389CCDDFC2863D4BC"] = true,    -- roltz
 }
 
 local VOTE_BAN_MESSAGE = "You've been banned from calling votes. Talk to knux"
@@ -197,9 +200,15 @@ end
 local function pause_runFrame(levelTime)
     if not ENABLE_TEAM_LOCK then return end
 
-    if et.trap_Cvar_Get("gamestate") == "0" then
+    local gs = tonumber(et.trap_Cvar_Get("gamestate")) or -1
+    if gs == 0 then
+        -- GS_PLAYING: lock teams once per round
         if not roundStarted then lockTeams() end
     else
+        -- GS_WARMUP or GS_INTERMISSION: ensure teams are unlocked
+        if roundStarted then
+            unlockTeams()
+        end
         roundStarted = false
     end
 end
