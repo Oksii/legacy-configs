@@ -1,62 +1,8 @@
 # ET:Legacy Objective Tracking Configuration
-
-# Oksii
-# Jan 2025
-
-########################
-# Global Configuration
-########################
-
-# Toggle between presets.
-# docker_config = false will use [configuration] table
-
-# docker_config = true will use [docker_configuration]
-# and environment variables provided by docker on runtime.
-# Automatically set via docker container, no edit required.
-
-docker_config = false
-
-# Regular configuration settings (used when docker_config = false)
-[configuration]
-api_token = "GameStatsWebLuaToken"
-api_url_matchid = "https://api.etl.lol/api/v2/stats/etl/match-manager"
-api_url_submit = "https://api.etl.lol/api/v2/stats/etl/matches/stats/submit"
-api_url_version = "https://api.etl.lol/api/v2/stats/etl/matches/stats/version"
-log_filepath = "/legacy/homepath/legacy/stats/game_stats.log"
-json_filepath = "/legacy/homepath/legacy/stats/"
-logging_enabled = true
-collect_obituaries = true
-collect_messages = true
-collect_damageStats = true
-collect_objstats = true
-collect_shovestats = true
-collect_movement_stats = true
-collect_stance_stats = true
-bobika_mapscripts = false
-force_names = false
-dump_stats_data = false
-version_check = true
-
-# Docker configuration settings (used when docker_config = true)
-[docker_configuration]
-api_token = "%CONF_STATS_API_TOKEN%"
-api_url_matchid = "%CONF_STATS_API_URL_MATCHID%"
-api_url_submit = "%CONF_STATS_API_URL_SUBMIT%"
-api_url_version = "https://api.etl.lol/api/v2/stats/etl/matches/stats/version"
-log_filepath = "%CONF_STATS_API_PATH%/game_stats.log"
-json_filepath = "%CONF_STATS_API_PATH%/"
-logging_enabled = "%CONF_STATS_API_LOG%"
-collect_obituaries = "%CONF_STATS_API_OBITUARIES%"
-collect_messages = "%CONF_STATS_API_MESSAGELOG%"
-collect_damageStats = "%CONF_STATS_API_DAMAGESTAT%"
-collect_objstats = "%CONF_STATS_API_OBJSTATS%"
-collect_shovestats = "%CONF_STATS_API_SHOVESTATS%"
-collect_movement_stats = "%CONF_STATS_API_MOVEMENTSTATS%"
-collect_stance_stats = "%CONF_STATS_API_STANCESTATS%"
-bobika_mapscripts = "%CONF_STATS_API_ALTMAPSCRIPTS%"
-force_names = "%CONF_STATS_API_FORCERENAME%"
-dump_stats_data = "%CONF_STATS_API_DUMPJSON%"
-version_check = true
+#
+# NOTE: API credentials, file paths, feature flags, and collection
+# toggles are now configured at the top of luascripts/stats.lua.
+# This file only contains map-specific patterns and buildable configs.
 
 #####################
 # Common Buildables
@@ -344,7 +290,7 @@ flag_pattern = "Axis have captured the Forward Bunker!"
 #######################################
 [maps.sp_delivery.objectives.gold_crate]
 steal_pattern = "stole \"the axis gold\""
-secured_pattern = ".*gold crate"  # have to be very flexible to match both maps..
+secured_pattern = ".*gold crate"
 return_pattern = "axis returned the gold"
 
 [maps.sp_delivery.buildables.east_wall]
