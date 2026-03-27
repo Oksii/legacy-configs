@@ -12,7 +12,7 @@ local ENABLE_DEFAULT_CLASS  = true
 
 -- [GUID BLOCKER]
 -- Block a specific GUID from joining teams. Will be moved to spectator and told to delete their etkey. 
--- This was needed for ETL LAN (2025) as users were using a shared guid. 
+-- This was needed for ETL (2025) LAN as users were using a shared guid. 
 -- Check only occurs during warmup (gamestate 2)
 local ENABLE_GUID_BLOCKER   = true
 local GUID_BLOCKER_TARGETS  = {
@@ -47,12 +47,23 @@ local BANNED_IPS = {
 
 local BAN_REASON = "Banned."
 
+-- [SPAWN INVUL]
+-- Auto-enabled when CS_CONFIGNAME contains "1on1" (i.e. the legacy1 1on1 configs)
+local SPAWN_INVUL_SECONDS = 1   -- shield duration in seconds
+
+-- [SAVE/LOAD]
+-- hazz' /save and /load. Enabled when CS_CONFIGNAME contains any of these
+local SAVELOAD_KEYWORDS = { "practice", "test", "trickjump", "tj" }
+
 -- [VOTE BANS]
 -- GUIDs blocked from calling votes
 -- Certain players just can't behave themselves and will spam call vote for surrender.
 local VOTE_BANNED_GUIDS = {
-    --["12345"] = true,
-    --["ABCDE"] = true,
+    ["2E2D30B37EA50338C0FA6A7237BE8315"] = true,    -- roltz
+    ["AB8139D583625DDC2D7CB966ECAB9E0C"] = true,    -- roltz
+    ["AB20CC32A12E9D295592BA81C5C7C457"] = true,    -- roltz
+    ["5911EB96C30C8E9B778CEFFECCBDC995"] = true,    -- roltz
+    ["836BF24C783B536389CCDDFC2863D4BC"] = true,    -- roltz
 }
 
 local VOTE_BAN_MESSAGE = "You've been banned from calling votes. Talk to knux"
@@ -110,6 +121,10 @@ end
 local function cleanIP(ip)
     if not ip or ip == "" then return nil end
     return string.match(ip, "^([%d%.]+)") or ip
+end
+
+local function cfgHasWord(cfgname, word)
+    return string.match(cfgname, "%f[%a%d]" .. word .. "%f[^%a%d]") ~= nil
 end
 
 local function isIPBanned(ip)
@@ -179,9 +194,13 @@ end
 -- MODULE: PAUSE / TEAM LOCK
 -- ============================================================
 
-local roundStarted      = false
-local techPauseUsed     = { [TEAM_AXIS] = 0, [TEAM_ALLIES] = 0 }
-local techPauseTeam     = nil
+local roundStarted       = false
+local techPauseUsed      = { [TEAM_AXIS] = 0, [TEAM_ALLIES] = 0 }
+local techPauseTeam      = nil
+local _spawnInvulActive  = false
+local _saveLoadActive    = false
+local _saveLoadPositions = {}
+local _saveLoadSprints   = {}
 
 local function lockTeams()
     et.trap_SendConsoleCommand(et.EXEC_APPEND, "ref lock r\n")
@@ -197,9 +216,15 @@ end
 local function pause_runFrame(levelTime)
     if not ENABLE_TEAM_LOCK then return end
 
-    if et.trap_Cvar_Get("gamestate") == "0" then
+    local gs = tonumber(et.trap_Cvar_Get("gamestate")) or -1
+    if gs == 0 then
+        -- GS_PLAYING: lock teams once per round
         if not roundStarted then lockTeams() end
     else
+        -- GS_WARMUP or GS_INTERMISSION: ensure teams are unlocked
+        if roundStarted then
+            unlockTeams()
+        end
         roundStarted = false
     end
 end
@@ -309,6 +334,69 @@ local function voteBan_clientCommand(clientNum, cmd)
     return 0
 end
 
+-- ============================================================
+-- MODULE: SPAWN INVUL
+-- ============================================================
+
+local function spawnInvul_init()
+    local raw     = et.trap_GetConfigstring(et.CS_CONFIGNAME) or ""
+    local cfgname = string.gsub(raw, "%^%d", "")  -- strip ET color codes
+    _spawnInvulActive = string.find(cfgname, "1on1", 1, true) ~= nil
+    if _spawnInvulActive then
+        log(string.format("Spawn invul enabled (%.1f sec) [config: %s]", SPAWN_INVUL_SECONDS, cfgname))
+    end
+end
+
+local function spawnInvul_clientSpawn(clientNum)
+    if not _spawnInvulActive then return end
+    et.gentity_set(clientNum, "ps.powerups", 1, et.trap_Milliseconds() + SPAWN_INVUL_SECONDS * 1000)
+end
+
+-- ============================================================
+-- MODULE: SAVE/LOAD
+-- ============================================================
+
+local function saveLoad_init()
+    local raw     = et.trap_GetConfigstring(et.CS_CONFIGNAME) or ""
+    local cfgname = string.lower(string.gsub(raw, "%^%d", ""))
+    _saveLoadActive    = false
+    _saveLoadPositions = {}
+    _saveLoadSprints   = {}
+    for _, kw in ipairs(SAVELOAD_KEYWORDS) do
+        if cfgHasWord(cfgname, kw) then
+            _saveLoadActive = true
+            break
+        end
+    end
+    if _saveLoadActive then
+        log("Save/load enabled [config: " .. cfgname .. "]")
+    end
+end
+
+local function saveLoad_save(clientNum)
+    _saveLoadPositions[clientNum] = et.gentity_get(clientNum, "ps.origin")
+    _saveLoadSprints[clientNum]   = et.gentity_get(clientNum, "ps.stats", et.STAT_SPRINTTIME) + 0.0
+end
+
+local function saveLoad_load(clientNum)
+    if not _saveLoadPositions[clientNum] then return end
+    et.gentity_set(clientNum, "ps.origin",   _saveLoadPositions[clientNum])
+    et.gentity_set(clientNum, "ps.velocity", {0, 0, 0})
+    et.gentity_set(clientNum, "ps.stats",    et.STAT_SPRINTTIME, _saveLoadSprints[clientNum])
+end
+
+local function saveLoad_clientCommand(clientNum, cmd)
+    if not _saveLoadActive then return 0 end
+    if cmd == "save" then
+        saveLoad_save(clientNum)
+        return 1
+    elseif cmd == "load" then
+        saveLoad_load(clientNum)
+        return 1
+    end
+    return 0
+end
+
 function et_InitGame(levelTime, randomSeed, restart)
     et.RegisterModname(modname .. " " .. version)
     if LOG_FILEPATH and LOG_FILEPATH ~= "" then
@@ -322,6 +410,8 @@ function et_InitGame(levelTime, randomSeed, restart)
     et.trap_Cvar_Set("match_timeoutlength", PAUSE_LENGTH)
     techPauseUsed = { [TEAM_AXIS] = 0, [TEAM_ALLIES] = 0 }
     techPauseTeam = nil
+    spawnInvul_init()
+    saveLoad_init()
     log("Initialized")
 end
 
@@ -372,9 +462,15 @@ function et_ClientCommand(clientNum, command)
 
     if pause_clientCommand(clientNum, cmd) == 1 then return 1 end
     if voteBan_clientCommand(clientNum, cmd) == 1 then return 1 end
+    if saveLoad_clientCommand(clientNum, cmd) == 1 then return 1 end
 
     return 0
 end
+
+function et_ClientSpawn(clientNum, revived)
+    spawnInvul_clientSpawn(clientNum)
+end
+
 
 function et_RunFrame(levelTime)
     pause_runFrame(levelTime)
