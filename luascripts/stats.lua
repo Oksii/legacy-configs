@@ -104,13 +104,13 @@ AUTO_START_WAIT_INITIAL         = tonumber(os.getenv("STATS_AUTO_START_WAIT_INIT
 AUTO_START_WAIT                 = tonumber(os.getenv("STATS_AUTO_START_WAIT"))         or AUTO_START_WAIT
 
 -- STATS_GATHER_FEATURES=true enables all gather features at once.
--- Individual flags still apply when this is unset or false.
+-- Individual flags can still be explicitly overridden (e.g. STATS_AUTO_CONFIG=false).
 if env_bool("STATS_GATHER_FEATURES", false) then
-    AUTO_RENAME = true
-    AUTO_SORT   = true
-    AUTO_START  = true
-    AUTO_MAP    = true
-    AUTO_CONFIG = true
+    if os.getenv("STATS_AUTO_RENAME") == nil then AUTO_RENAME = true end
+    if os.getenv("STATS_AUTO_SORT")   == nil then AUTO_SORT   = true end
+    if os.getenv("STATS_AUTO_START")  == nil then AUTO_START  = true end
+    if os.getenv("STATS_AUTO_MAP")    == nil then AUTO_MAP    = true end
+    if os.getenv("STATS_AUTO_CONFIG") == nil then AUTO_CONFIG = true end
 end
 
 -- [SUB-MODULES]
