@@ -1,5 +1,5 @@
 local modname = "combinedfixes"
-local version = "1.0"
+local version = "1.2"
 
 -- ============================================================
 -- CONFIGURATION
@@ -59,11 +59,8 @@ local SAVELOAD_KEYWORDS = { "practice", "test", "trickjump", "tj" }
 -- GUIDs blocked from calling votes
 -- Certain players just can't behave themselves and will spam call vote for surrender.
 local VOTE_BANNED_GUIDS = {
-    ["2E2D30B37EA50338C0FA6A7237BE8315"] = true,    -- roltz
-    ["AB8139D583625DDC2D7CB966ECAB9E0C"] = true,    -- roltz
-    ["AB20CC32A12E9D295592BA81C5C7C457"] = true,    -- roltz
-    ["5911EB96C30C8E9B778CEFFECCBDC995"] = true,    -- roltz
-    ["836BF24C783B536389CCDDFC2863D4BC"] = true,    -- roltz
+    --["12345"] = true,
+    --["ABCDE"] = true,
 }
 
 local VOTE_BAN_MESSAGE = "You've been banned from calling votes. Talk to knux"
@@ -79,6 +76,54 @@ local COMMAND_LOG_REF        = true   -- log ref commands
 -- Leave empty to auto-detect: <fs_homepath>/legacy/combinedfixes.log
 -- local LOG_FILEPATH = "/legacy/homepath/legacy/stats/game_stats.log"
 local LOG_FILEPATH = ""
+
+-- [ENV OVERRIDES]
+-- Any setting above can be overridden by an environment variable of the same
+-- name used in Docker (e.g. CF_TECH_PAUSE, CF_BANNED_GUIDS).
+-- Unset variables are silently ignored and the defaults above apply.
+local function env_bool(name, default)
+    local v = os.getenv(name)
+    if v == "true"  then return true  end
+    if v == "false" then return false end
+    return default
+end
+
+ENABLE_DEFAULT_CLASS    = env_bool("CF_DEFAULT_CLASS",      ENABLE_DEFAULT_CLASS)
+ENABLE_GUID_BLOCKER     = env_bool("CF_GUID_BLOCKER",       ENABLE_GUID_BLOCKER)
+ENABLE_TECH_PAUSE       = env_bool("CF_TECH_PAUSE",         ENABLE_TECH_PAUSE)
+TECH_PAUSE_LENGTH       = tonumber(os.getenv("CF_TECH_PAUSE_LENGTH"))   or TECH_PAUSE_LENGTH
+TECH_PAUSE_COUNT        = tonumber(os.getenv("CF_TECH_PAUSE_COUNT"))    or TECH_PAUSE_COUNT
+PAUSE_LENGTH            = tonumber(os.getenv("CF_PAUSE_LENGTH"))        or PAUSE_LENGTH
+ENABLE_TEAM_LOCK        = env_bool("CF_TEAM_LOCK",          ENABLE_TEAM_LOCK)
+ENABLE_COMMAND_LOGGING  = env_bool("CF_COMMAND_LOGGING",    ENABLE_COMMAND_LOGGING)
+COMMAND_LOG_VOTES       = env_bool("CF_COMMAND_LOG_VOTES",  COMMAND_LOG_VOTES)
+COMMAND_LOG_REF         = env_bool("CF_COMMAND_LOG_REF",    COMMAND_LOG_REF)
+SPAWN_INVUL_SECONDS     = tonumber(os.getenv("CF_SPAWN_INVUL_SECONDS")) or SPAWN_INVUL_SECONDS
+BAN_REASON              = os.getenv("CF_BAN_REASON")                    or BAN_REASON
+LOG_FILEPATH            = os.getenv("CF_LOG_FILEPATH")                  or LOG_FILEPATH
+
+local function _merge_csv_guids(env_name, target)
+    local v = os.getenv(env_name)
+    if not v or v == "" then return end
+    for item in string.gmatch(v, "[^,]+") do
+        item = string.upper(string.match(item, "^%s*(.-)%s*$"))
+        if item ~= "" then target[item] = true end
+    end
+end
+
+local function _merge_csv_ips(env_name, target)
+    local v = os.getenv(env_name)
+    if not v or v == "" then return end
+    for item in string.gmatch(v, "[^,]+") do
+        item = string.match(item, "^%s*(.-)%s*$")
+        if item ~= "" then target[item] = true end
+    end
+end
+
+_merge_csv_guids("CF_GUID_BLOCKER_TARGETS", GUID_BLOCKER_TARGETS)
+_merge_csv_guids("CF_BANNED_GUIDS",         BANNED_GUIDS)
+_merge_csv_ips  ("CF_BANNED_IPS",           BANNED_IPS)
+_merge_csv_guids("CF_VOTE_BANNED_GUIDS",    VOTE_BANNED_GUIDS)
 
 -- ============================================================ --
 -- ============================================================ --
