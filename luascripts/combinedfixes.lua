@@ -47,6 +47,14 @@ local BANNED_IPS = {
 
 local BAN_REASON = "Banned."
 
+-- [SPAWN INVUL]
+-- Auto-enabled when CS_CONFIGNAME contains "1on1" (i.e. the legacy1 1on1 configs)
+local SPAWN_INVUL_SECONDS = 1   -- shield duration in seconds
+
+-- [SAVE/LOAD]
+-- hazz' /save and /load. Enabled when CS_CONFIGNAME contains any of these
+local SAVELOAD_KEYWORDS = { "practice", "test", "trickjump", "tj" }
+
 -- [VOTE BANS]
 -- GUIDs blocked from calling votes
 -- Certain players just can't behave themselves and will spam call vote for surrender.
@@ -113,6 +121,10 @@ end
 local function cleanIP(ip)
     if not ip or ip == "" then return nil end
     return string.match(ip, "^([%d%.]+)") or ip
+end
+
+local function cfgHasWord(cfgname, word)
+    return string.match(cfgname, "%f[%a%d]" .. word .. "%f[^%a%d]") ~= nil
 end
 
 local function isIPBanned(ip)
@@ -182,9 +194,13 @@ end
 -- MODULE: PAUSE / TEAM LOCK
 -- ============================================================
 
-local roundStarted      = false
-local techPauseUsed     = { [TEAM_AXIS] = 0, [TEAM_ALLIES] = 0 }
-local techPauseTeam     = nil
+local roundStarted       = false
+local techPauseUsed      = { [TEAM_AXIS] = 0, [TEAM_ALLIES] = 0 }
+local techPauseTeam      = nil
+local _spawnInvulActive  = false
+local _saveLoadActive    = false
+local _saveLoadPositions = {}
+local _saveLoadSprints   = {}
 
 local function lockTeams()
     et.trap_SendConsoleCommand(et.EXEC_APPEND, "ref lock r\n")
@@ -318,6 +334,69 @@ local function voteBan_clientCommand(clientNum, cmd)
     return 0
 end
 
+-- ============================================================
+-- MODULE: SPAWN INVUL
+-- ============================================================
+
+local function spawnInvul_init()
+    local raw     = et.trap_GetConfigstring(et.CS_CONFIGNAME) or ""
+    local cfgname = string.gsub(raw, "%^%d", "")  -- strip ET color codes
+    _spawnInvulActive = string.find(cfgname, "1on1", 1, true) ~= nil
+    if _spawnInvulActive then
+        log(string.format("Spawn invul enabled (%.1f sec) [config: %s]", SPAWN_INVUL_SECONDS, cfgname))
+    end
+end
+
+local function spawnInvul_clientSpawn(clientNum)
+    if not _spawnInvulActive then return end
+    et.gentity_set(clientNum, "ps.powerups", 1, et.trap_Milliseconds() + SPAWN_INVUL_SECONDS * 1000)
+end
+
+-- ============================================================
+-- MODULE: SAVE/LOAD
+-- ============================================================
+
+local function saveLoad_init()
+    local raw     = et.trap_GetConfigstring(et.CS_CONFIGNAME) or ""
+    local cfgname = string.lower(string.gsub(raw, "%^%d", ""))
+    _saveLoadActive    = false
+    _saveLoadPositions = {}
+    _saveLoadSprints   = {}
+    for _, kw in ipairs(SAVELOAD_KEYWORDS) do
+        if cfgHasWord(cfgname, kw) then
+            _saveLoadActive = true
+            break
+        end
+    end
+    if _saveLoadActive then
+        log("Save/load enabled [config: " .. cfgname .. "]")
+    end
+end
+
+local function saveLoad_save(clientNum)
+    _saveLoadPositions[clientNum] = et.gentity_get(clientNum, "ps.origin")
+    _saveLoadSprints[clientNum]   = et.gentity_get(clientNum, "ps.stats", et.STAT_SPRINTTIME) + 0.0
+end
+
+local function saveLoad_load(clientNum)
+    if not _saveLoadPositions[clientNum] then return end
+    et.gentity_set(clientNum, "ps.origin",   _saveLoadPositions[clientNum])
+    et.gentity_set(clientNum, "ps.velocity", {0, 0, 0})
+    et.gentity_set(clientNum, "ps.stats",    et.STAT_SPRINTTIME, _saveLoadSprints[clientNum])
+end
+
+local function saveLoad_clientCommand(clientNum, cmd)
+    if not _saveLoadActive then return 0 end
+    if cmd == "save" then
+        saveLoad_save(clientNum)
+        return 1
+    elseif cmd == "load" then
+        saveLoad_load(clientNum)
+        return 1
+    end
+    return 0
+end
+
 function et_InitGame(levelTime, randomSeed, restart)
     et.RegisterModname(modname .. " " .. version)
     if LOG_FILEPATH and LOG_FILEPATH ~= "" then
@@ -331,6 +410,8 @@ function et_InitGame(levelTime, randomSeed, restart)
     et.trap_Cvar_Set("match_timeoutlength", PAUSE_LENGTH)
     techPauseUsed = { [TEAM_AXIS] = 0, [TEAM_ALLIES] = 0 }
     techPauseTeam = nil
+    spawnInvul_init()
+    saveLoad_init()
     log("Initialized")
 end
 
@@ -381,9 +462,15 @@ function et_ClientCommand(clientNum, command)
 
     if pause_clientCommand(clientNum, cmd) == 1 then return 1 end
     if voteBan_clientCommand(clientNum, cmd) == 1 then return 1 end
+    if saveLoad_clientCommand(clientNum, cmd) == 1 then return 1 end
 
     return 0
 end
+
+function et_ClientSpawn(clientNum, revived)
+    spawnInvul_clientSpawn(clientNum)
+end
+
 
 function et_RunFrame(levelTime)
     pause_runFrame(levelTime)
