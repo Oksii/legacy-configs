@@ -978,6 +978,18 @@ function gather.tick(frame_time, current_gs)
 
     if _state == STATE_ARMED then
         if now >= scheduled - 60 then
+            -- Re-validate route before firing any warnings: the match may have finished
+            -- and the route deregistered after Lua cached the match data at init.
+            if api_ref and not api_ref.validate_route(match_id) then
+                if log then
+                    log.write(string.format(
+                        "auto_start: T-60 abort — route no longer valid for match %s",
+                        tostring(match_id)))
+                end
+                gather.reset_team_data()
+                return
+            end
+
             _state = STATE_WARNING_60
             local conn, miss, unk = scan_players(match_data)
 

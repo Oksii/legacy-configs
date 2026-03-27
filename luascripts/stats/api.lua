@@ -78,6 +78,23 @@ function api.fetch_match_id()
     return fallback
 end
 
+-- Checks if the route is still registered for expected_match_id.
+-- No side effects: does not update cached_match_id or call gather callbacks.
+-- Returns true only if the route responds with the exact same match_id.
+function api.validate_route(expected_match_id)
+    if not expected_match_id or expected_match_id == "" then return false end
+    if not _url_matchid or _url_matchid == "" then return true end
+
+    local url      = string.format("%s/%s/%s", _url_matchid, _server_ip, _server_port)
+    local curl_cmd = string.format(
+        "curl -H \"Authorization: Bearer %s\" --connect-timeout 1 --max-time 2 %s",
+        _api_token, url)
+
+    local result = http_ref.sync(curl_cmd)
+    return type(result) == "table" and result.match_id == expected_match_id
+end
+
+
 local function parse_version(v)
     local ma, mi, pa = v:match("^(%d+)%.(%d+)%.(%d+)")
     if ma then return tonumber(ma), tonumber(mi), tonumber(pa) end
