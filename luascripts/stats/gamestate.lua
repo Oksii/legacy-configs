@@ -17,6 +17,7 @@ local objectives_ref
 local gather_ref
 local api_ref
 local stats_ref
+local scores_ref
 
 gamestate.current          = -1
 gamestate._last_gs_raw     = ""
@@ -42,21 +43,24 @@ function gamestate.init(cfg, log_ref, all_modules)
     gather_ref     = all_modules.gather
     api_ref        = all_modules.api
     stats_ref      = all_modules.stats
+    scores_ref     = all_modules.scores
 
     _save_stats_delay = cfg.save_stats_delay or 3000
 end
 
 
 function gamestate.reset(server_ip, server_port)
-    if players_ref    then players_ref.reset()      end
-    if movement_ref   then movement_ref.reset()     end
-    if gamelog_ref    then gamelog_ref.reset()      end
-    if events_ref     then events_ref.reset()       end
-    if objectives_ref then objectives_ref.reset()   end
-    if api_ref        then api_ref.reset()          end
-    if stats_ref      then stats_ref.reset()        end
-    if gather_ref     then gather_ref.reset()       end
-    -- gather.reset_team_data() is NOT called here — team data survives into the next round
+    if players_ref    then players_ref.reset()           end
+    if movement_ref   then movement_ref.reset()          end
+    if gamelog_ref    then gamelog_ref.reset()           end
+    if events_ref     then events_ref.reset()            end
+    if objectives_ref then objectives_ref.reset()        end
+    if api_ref        then api_ref.reset()               end
+    if stats_ref      then stats_ref.reset()             end
+    if gather_ref     then gather_ref.reset()            end
+    if scores_ref     then scores_ref.reset()            end
+    if gather_ref     then gather_ref.reset_team_data()  end
+    -- team data is cleared here, after stats.save() and the post-save team_data.json
 
     gamestate.round_start_time = 0
     gamestate.round_end_time   = 0
@@ -103,8 +107,6 @@ function gamestate.handle_change(new_gs, server_ip, server_port, frame_time)
 
         if gather_ref then
             gather_ref.on_intermission()
-            gather_ref.wipe_team_data_file()
-            gather_ref.reset_team_data()
         end
     end
 end
@@ -129,6 +131,12 @@ function gamestate.tick(frame_time, server_ip, server_port)
                 gamestate.round_start_unix,
                 gamestate.round_end_unix,
                 server_ip, server_port)
+
+            -- Persist {match_id}_team_data.json with updated scores_state before resetting.
+            -- scores_ref holds the authoritative match_id (set via load_team_data_from_file or
+            -- on_team_data_fetched) and survives the et_InitGame VM reset via restore_state().
+            local save_match_id = scores_ref and scores_ref.get_match_id() or nil
+            if gather_ref then gather_ref.save_team_data_to_file(save_match_id) end
 
             gamestate.reset(server_ip, server_port)
         end
