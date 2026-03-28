@@ -1,6 +1,6 @@
 --[[
     stats/util/utils.lua
-    Shared pure utility functions — no ET API calls, no I/O.
+    Shared utility functions
 --]]
 
 local utils = {}
@@ -102,6 +102,47 @@ function utils.fmt_pos(pos)
         math.floor(pos[1] + 0.5),
         math.floor(pos[2] + 0.5),
         math.floor(pos[3] + 0.5))
+end
+
+
+-- Resolve ^~ placeholders in a string to random unique ET color codes.
+-- Each ^~ gets a color not already present elsewhere in the string.
+-- Valid ET color characters: 0-9, A-Z, a-z.
+local ET_COLOR_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+function utils.resolve_random_colors(text)
+    if not text or not text:find("%^~") then return text end
+
+    local used = {}
+    for c in text:gmatch("%^([0-9A-Za-z])") do
+        used[c] = true
+    end
+
+    local pool = {}
+    for i = 1, #ET_COLOR_CHARS do
+        local c = ET_COLOR_CHARS:sub(i, i)
+        if not used[c] then pool[#pool + 1] = c end
+    end
+    for i = #pool, 2, -1 do
+        local j = math.random(i)
+        pool[i], pool[j] = pool[j], pool[i]
+    end
+
+    local idx = 0
+    return (text:gsub("%^~", function()
+        idx = idx + 1
+        return pool[idx] and ("^" .. pool[idx]) or "^7"
+    end))
+end
+
+
+function utils.say(msg)
+    et.trap_SendServerCommand(-1, "chat \"" .. msg .. "\"")
+end
+
+
+function utils.cp(msg)
+    et.trap_SendServerCommand(-1, "cp \"" .. msg .. "\"")
 end
 
 return utils

@@ -19,21 +19,26 @@ local gather = {}
 
 local json  = require("dkjson")
 local utils = require("luascripts/stats/util/utils")
+local say   = utils.say
+local cp    = utils.cp
 
 local log
 local http_ref
 local api_ref
+local scores_ref
 
 local _auto_rename              = false
 local _auto_sort                = false
 local _auto_start               = false
 local _auto_map                 = false
 local _auto_config              = false
+local _auto_scores              = false
 local _eff_rename               = false  -- _auto_rename  AND match_data.auto_rename
 local _eff_sort                 = false  -- _auto_sort    AND match_data.auto_sort
 local _eff_start                = false  -- _auto_start   AND match_data.auto_start
 local _eff_map                  = false  -- _auto_map     AND match_data.auto_map
 local _eff_config               = false  -- _auto_config  AND route data present
+local _eff_scores               = false  -- _auto_scores  AND match_data.auto_scores
 local _maxClients               = 24
 local _log_level                = "info"
 local _start_wait_initial       = 420   -- map 1 round 1
@@ -45,13 +50,11 @@ local _initial_round            = 0     -- g_currentRound captured at et_InitGam
 local _pending_map_switch       = nil   -- next_map to switch to after round 2 intermission
 local _pending_map_switch_time  = 0
 
-local TEAM_DATA_FILE            = "team_data.json"
 local TEAM_DATA_CHECK_INTERVAL  = 5000  -- ms between mass-validation sweeps
 local RENAME_DELAY              = 150   -- ms between rename queue items
 local CON_CONNECTED             = 2
 local EF_READY                  = 0x00000008
 
-local _team_data_file_path      = nil
 local _team_data_cache          = nil
 
 local _team_data_fetched        = false
@@ -79,6 +82,9 @@ local _state                    = STATE_IDLE
 local _countdown_val            = nil
 local _countdown_last           = 0
 
+local NOTIFY_INIT_SUPPRESS_MS   = 3000  -- suppress notify calls for 3s after init/reset
+local _init_frame_time          = 0     -- set at gather.init() and gather.reset()
+
 local scan_players
 local notify_api
 
@@ -91,21 +97,24 @@ local TEAM_AXIS                 = 1
 local TEAM_ALLIES               = 2
 
 
-function gather.init(cfg, log_ref, http_module, api_module)
-    log      = log_ref
-    http_ref = http_module
-    api_ref  = api_module
+function gather.init(cfg, log_ref, http_module, api_module, scores_module)
+    log        = log_ref
+    http_ref   = http_module
+    api_ref    = api_module
+    scores_ref = scores_module
 
     _auto_rename        = cfg.auto_rename     or false
     _auto_sort          = cfg.auto_sort       or false
     _auto_start         = cfg.auto_start      or false
     _auto_map           = cfg.auto_map        or false
     _auto_config        = cfg.auto_config     or false
+    _auto_scores        = cfg.auto_scores     or false
     _eff_rename         = false
     _eff_sort           = false
     _eff_start          = false
     _eff_map            = false
     _eff_config         = false
+    _eff_scores         = false
     _auto_config_map    = cfg.auto_config_map or {}
     _maxClients         = cfg.maxClients      or 24
     _log_level          = cfg.api_log_level or cfg.log_level or "info"
@@ -115,7 +124,6 @@ function gather.init(cfg, log_ref, http_module, api_module)
 
     _match_extra         = {}
     _match_data_stale    = true
-    _team_data_file_path = nil
 
     _server_ip   = cfg.server_ip   or ""
     _server_port = cfg.server_port or ""
@@ -131,6 +139,7 @@ function gather.init(cfg, log_ref, http_module, api_module)
     _state         = STATE_IDLE
     _countdown_val = nil
     _countdown_last = 0
+    _init_frame_time = et.trap_Milliseconds()
 end
 
 
@@ -141,6 +150,7 @@ function gather.reset()
     _countdown_val    = nil
     _countdown_last   = 0
     _timing_computed  = false  -- recompute scheduled_start/sides_swapped for the new round
+    _init_frame_time  = et.trap_Milliseconds()
 end
 
 
@@ -153,7 +163,6 @@ function gather.reset_team_data()
     _rename_in_progress   = {}
     _player_ready_status  = {}
     _last_name_check_time = 0
-    _team_data_file_path  = nil
     _route_match_id       = nil
     _match_extra           = {}
     _match_data_stale      = true
@@ -162,32 +171,49 @@ function gather.reset_team_data()
     _eff_start             = false
     _eff_map               = false
     _eff_config            = false
+    _eff_scores            = false
 end
 
 
-local function get_team_data_file_path()
-    if _team_data_file_path then return _team_data_file_path end
+local function get_team_data_dir()
     local fs_basepath = et.trap_Cvar_Get("fs_basepath")
     local fs_game     = et.trap_Cvar_Get("fs_game")
     if not fs_basepath or not fs_game then return nil end
-    _team_data_file_path = string.format("%s/%s/luascripts/%s",
-        fs_basepath, fs_game, TEAM_DATA_FILE)
-    return _team_data_file_path
+    return string.format("%s/%s/luascripts", fs_basepath, fs_game)
+end
+
+
+local function get_team_data_file_path(match_id)
+    local dir = get_team_data_dir()
+    if not dir then return nil end
+    if match_id and match_id ~= "" then
+        return string.format("%s/%s_team_data.json", dir, match_id)
+    end
+    local ok, f = pcall(io.popen,
+        string.format('ls -t "%s"/*_team_data.json 2>/dev/null | head -1', dir))
+    if ok and f then
+        local found = f:read("*l")
+        f:close()
+        if found and found ~= "" then return found end
+    end
+    return string.format("%s/team_data.json", dir)
 end
 
 
 function gather.save_team_data_to_file(match_id)
     if not _team_data_cache then return false end
-    local path = get_team_data_file_path()
+    local effective_id = match_id or _route_match_id
+    local path = get_team_data_file_path(effective_id)
     if not path then return false end
 
     local data = {
-        match_id       = match_id,
+        match_id       = effective_id,
         alpha_teamname = _team_names_cache.alpha_teamname,
         beta_teamname  = _team_names_cache.beta_teamname,
         match          = _team_data_cache,
         match_extra    = _match_extra,
         last_updated   = et.trap_Milliseconds(),
+        scores_state   = scores_ref and scores_ref.get_state_for_persistence() or nil,
     }
     local jstr = json.encode(data)
     if not jstr then return false end
@@ -200,7 +226,7 @@ function gather.save_team_data_to_file(match_id)
     end)
     if ok and log then
         log.write(string.format("Team data saved — match_id: %s, alpha: %s, beta: %s",
-            match_id or "nil",
+            effective_id or "nil",
             _team_names_cache.alpha_teamname or "nil",
             _team_names_cache.beta_teamname  or "nil"))
     end
@@ -209,7 +235,7 @@ end
 
 
 function gather.load_team_data_from_file(cached_match_id_ref)
-    local path = get_team_data_file_path()
+    local path = get_team_data_file_path(_route_match_id)
     if not path then return false end
 
     local ok, result = pcall(function()
@@ -222,8 +248,9 @@ function gather.load_team_data_from_file(cached_match_id_ref)
     end)
 
     if ok and result then
-        if result.match_id and cached_match_id_ref then
-            cached_match_id_ref[1] = result.match_id
+        if result.match_id then
+            if cached_match_id_ref then cached_match_id_ref[1] = result.match_id end
+            _route_match_id = result.match_id
         end
         _team_names_cache.alpha_teamname = result.alpha_teamname
         _team_names_cache.beta_teamname  = result.beta_teamname
@@ -233,10 +260,27 @@ function gather.load_team_data_from_file(cached_match_id_ref)
         if result.match_extra then
             _match_extra = result.match_extra
             -- Re-derive effective flags; gather.init() reset them all to false.
-            _eff_rename = _auto_rename and (_match_extra.auto_rename or false)
-            _eff_sort   = _auto_sort   and (_match_extra.auto_sort   or false)
-            _eff_start  = _auto_start  and (_match_extra.auto_start  or false)
-            _eff_map    = _auto_map    and (_match_extra.auto_map    or false)
+            _eff_rename  = _auto_rename  and (_match_extra.auto_rename  or false)
+            _eff_sort    = _auto_sort    and (_match_extra.auto_sort    or false)
+            _eff_start   = _auto_start   and (_match_extra.auto_start   or false)
+            _eff_map     = _auto_map     and (_match_extra.auto_map     or false)
+            _eff_scores  = _auto_scores  and (_match_extra.auto_scores  or false)
+        end
+        -- Pass all effective feature flags to scores so it can include them in metadata
+        if scores_ref and result.match_id and result.match then
+            scores_ref.update_match_data(result.match_id, result.match, {
+                auto_rename = _eff_rename,
+                auto_sort   = _eff_sort,
+                auto_start  = _eff_start,
+                auto_map    = _eff_map,
+                auto_config = _eff_config,
+                auto_scores = _eff_scores,
+            })
+            -- Restore cumulative scores from the previous round
+            -- Called after update_match_data so _match_id is set and the match_id guard fires.
+            if result.scores_state then
+                scores_ref.restore_state(result.scores_state)
+            end
         end
         if log then
             log.write(string.format("Team data loaded from file — match_id: %s, alpha: %s, beta: %s",
@@ -251,7 +295,7 @@ end
 
 
 function gather.wipe_team_data_file()
-    local path = get_team_data_file_path()
+    local path = get_team_data_file_path(_route_match_id)
     if not path then return false end
     local ok = pcall(os.remove, path)
     if ok and log then log.write("Team data file wiped") end
@@ -344,6 +388,7 @@ function gather.on_team_data_fetched(match_id, match_data)
         auto_sort       = match_data.auto_sort       or false,
         auto_start      = match_data.auto_start      or false,
         auto_map        = match_data.auto_map        or false,
+        auto_scores     = match_data.auto_scores     or false,
         scheduled_start = match_data.scheduled_start or nil,
         sides_swapped   = match_data.sides_swapped   or false,
         maps            = match_data.maps            or {},
@@ -356,11 +401,45 @@ function gather.on_team_data_fetched(match_id, match_data)
     -- from non-gather routes that carry no team data.
     local _cfg_alpha = match_data.alpha_team and #match_data.alpha_team or 0
     local _cfg_beta  = match_data.beta_team  and #match_data.beta_team  or 0
-    _eff_rename = _auto_rename and _match_extra.auto_rename
-    _eff_sort   = _auto_sort   and _match_extra.auto_sort
-    _eff_start  = _auto_start  and _match_extra.auto_start
-    _eff_map    = _auto_map    and _match_extra.auto_map
-    _eff_config = _auto_config and (_cfg_alpha + _cfg_beta) > 0
+    _eff_rename  = _auto_rename  and _match_extra.auto_rename
+    _eff_sort    = _auto_sort    and _match_extra.auto_sort
+    _eff_start   = _auto_start   and _match_extra.auto_start
+    _eff_map     = _auto_map     and _match_extra.auto_map
+    _eff_config  = _auto_config  and (_cfg_alpha + _cfg_beta) > 0
+    _eff_scores  = _auto_scores  and _match_extra.auto_scores
+
+    -- Pass all effective feature flags to scores so it can include them in metadata
+    if scores_ref then
+        scores_ref.update_match_data(match_id, match_data, {
+            auto_rename = _eff_rename,
+            auto_sort   = _eff_sort,
+            auto_start  = _eff_start,
+            auto_map    = _eff_map,
+            auto_config = _eff_config,
+            auto_scores = _eff_scores,
+        })
+
+        -- Restore accumulated scores from the previous round's save.
+        -- update_match_data above may have reset scores if this is a new Lua VM
+        -- (et_InitGame fires between every round). _route_match_id is now set so
+        -- we can locate {match_id}_team_data.json directly without a directory scan.
+        -- restore_state is idempotent: it skips if the file's match_id doesn't match.
+        if _route_match_id then
+            local path = get_team_data_file_path(_route_match_id)
+            if path then
+                local ok, file_data = pcall(function()
+                    local f = io.open(path, "r")
+                    if not f then return nil end
+                    local content = f:read("*all")
+                    f:close()
+                    return content and json.decode(content) or nil
+                end)
+                if ok and file_data and file_data.scores_state then
+                    scores_ref.restore_state(file_data.scores_state)
+                end
+            end
+        end
+    end
 
     if not had_names and _team_names_cache.alpha_teamname and _eff_rename then
         for clientNum = 0, _maxClients - 1 do
@@ -735,8 +814,7 @@ function gather.assign_team_on_connect(clientNum, current_gs)
     local ingame_name = et.gentity_get(clientNum, "pers.netname") or ""
     local display     = discord_nick and (discord_nick ~= ingame_name) and
                             string.format(" ^7(^3%s^7)", discord_nick) or ""
-    et.trap_SendConsoleCommand(et.EXEC_APPEND,
-        string.format("say %s%s ^7moved to %s\n", ingame_name, display, team_name))
+    say(string.format("%s%s ^7moved to %s", ingame_name, display, team_name))
 
     if gather.is_team_data_available() then
         gather.enforce_player_name(clientNum, 200)
@@ -851,6 +929,9 @@ end
 
 notify_api = function(seconds_until_start, connected, missing, unknown, match_id, trigger)
     if not _api_url_notify or _api_url_notify == "" then return end
+    local current_gs = tonumber(et.trap_Cvar_Get("gamestate")) or -1
+    if current_gs ~= et.GS_WARMUP then return end
+    if et.trap_Milliseconds() - _init_frame_time < NOTIFY_INIT_SUPPRESS_MS then return end
 
     local payload = {
         match_id            = match_id or "",
@@ -874,15 +955,6 @@ notify_api = function(seconds_until_start, connected, missing, unknown, match_id
         _api_token, _api_url_notify
     )
     http_ref.async(curl_cmd, json_str)
-end
-
-
-local function say(msg)
-    et.trap_SendServerCommand(-1, "chat \"" .. msg .. "\"")
-end
-
-local function cp(msg)
-    et.trap_SendServerCommand(-1, "cp \"" .. msg .. "\"")
 end
 
 
@@ -954,6 +1026,24 @@ function gather.tick(frame_time, current_gs)
             _countdown_val = nil
         end
         return
+    end
+
+    -- Suppress auto_start if the match is already finished (score determined).
+    if scores_ref and _eff_start and scores_ref.is_finished() then
+        if _state ~= STATE_IDLE then gather.reset() end
+        return
+    end
+
+    -- Suppress auto_start if R2 has already completed on this map.
+    if scores_ref and _eff_start then
+        local last = scores_ref.get_last_round()
+        if last and last.round_num == 2 then
+            local current_map = (et.trap_Cvar_Get("mapname") or ""):lower()
+            if last.mapname and current_map:find(last.mapname:lower(), 1, true) then
+                if _state ~= STATE_IDLE then gather.reset() end
+                return
+            end
+        end
     end
 
     if not (_match_extra and _match_extra.auto_start) then
@@ -1141,12 +1231,12 @@ function gather.on_intermission()
         return
     end
 
-    -- Schedule switch 5s from now
+    -- Schedule switch 7s from now
     _pending_map_switch      = next_map
-    _pending_map_switch_time = os.time() + 5
+    _pending_map_switch_time = os.time() + 7
     if log then
         log.write(string.format(
-            "auto_map: round 2 complete — '%s' → '%s' scheduled in 5s",
+            "auto_map: round 2 complete — '%s' → '%s' scheduled in 7s",
             current_map, next_map))
     end
 end
