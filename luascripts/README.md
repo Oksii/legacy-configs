@@ -12,30 +12,36 @@ payload to a configurable API endpoint at the end of every round.
 {
   "round_info":   { ... },
   "player_stats": { "<guid>": { ... } },
+  "metadata":     { ... },
   "gamelog":      [ { ... } ]
 }
 ```
 
 ### `round_info`
 
-Server and round metadata.
+Round outcome and timing data.
+
+> **Deprecation notice:** The fields `servername`, `config`, `matchID`, `stats_version`,
+> `mod_version`, `et_version`, `server_ip`, and `server_port` are duplicated here for
+> backwards compatibility but have moved to [`metadata`](#metadata). 
+> read those fields from `metadata` and treat the copies in `round_info` as legacy.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `servername` | string | `sv_hostname` |
-| `config` | string | `g_customConfig` |
+| `servername` | string | *(legacy — prefer `metadata.servername`)* `sv_hostname` |
+| `config` | string | *(legacy — prefer `metadata.config`)* `g_customConfig` |
+| `matchID` | string | *(legacy — prefer `metadata.matchID`)* Match ID from API, or unix timestamp fallback |
+| `stats_version` | string | *(legacy — prefer `metadata.stats_version`)* stats.lua module version (e.g. `"2.0.0"`) |
+| `mod_version` | string | *(legacy — prefer `metadata.mod_version`)* ETLegacy mod version (e.g. `"v2.83.2-594-g5cdc1c9"`) |
+| `et_version` | string | *(legacy — prefer `metadata.et_version`)* ET engine version (e.g. `"ET 2.60b linux-x86_64"`) |
+| `server_ip` | string | *(legacy — prefer `metadata.server_ip`)* Resolved server IP |
+| `server_port` | string | *(legacy — prefer `metadata.server_port`)* Server port |
 | `mapname` | string | Current map |
 | `round` | number | 1 or 2 |
-| `matchID` | string | Match ID from API, or unix timestamp fallback |
-| `stats_version` | string | stats.lua module version (e.g. `"2.0.0"`) |
-| `mod_version` | string | ETLegacy mod version from `mod_version` cvar (e.g. `"v2.83.2-594-g5cdc1c9"`) |
-| `et_version` | string | Base ET engine version from `version` cvar (e.g. `"ET 2.60b linux-x86_64"`) |
 | `defenderteam` | number | Defending team (1=Axis, 2=Allies) |
 | `winnerteam` | number | Winning team |
 | `timelimit` | string | Timelimit in `M:SS` format |
 | `nextTimeLimit` | string | Next-round timelimit |
-| `server_ip` | string | Resolved server IP |
-| `server_port` | string | Server port |
 | `round_start` | number | Level time (ms) when round started |
 | `round_end` | number | Level time (ms) when round ended |
 | `round_start_unix` | number | Unix timestamp when round started |
@@ -86,6 +92,59 @@ Keyed by GUID. Each entry includes:
 | `in_sprint` | Seconds sprinting (stamina depleting) |
 | `in_turtle` | Seconds with zero stamina / full recovery (standing still) |
 | `is_downed` | Seconds in downed (revivable) state |
+
+### `metadata`
+
+Present on every submission. Contains server identity and runtime context — versions, active
+gather feature flags, and (when `AUTO_SCORES` is on) the current score state.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `servername` | string | `sv_hostname` |
+| `config` | string | `g_customConfig` |
+| `stats_version` | string | stats.lua module version |
+| `mod_version` | string | ETLegacy mod version |
+| `et_version` | string | ET engine version |
+| `server_ip` | string | Resolved server IP |
+| `server_port` | string | Server port |
+| `matchID` | string | Match ID |
+| `features` | object \| null | Active gather feature flags (omitted if none) |
+| `scores` | object \| null | Current score state (omitted when `AUTO_SCORES` is off or no rounds processed yet — see below) |
+
+**`features` fields** (all boolean):
+
+| Field | Description |
+|-------|-------------|
+| `auto_rename` | Team name enforcement active |
+| `auto_sort` | Auto-sort to roster team active |
+| `auto_start` | Scheduled-start countdown active |
+| `auto_map` | Auto map rotation active |
+| `auto_config` | Auto server config active |
+| `auto_scores` | Score tracking active |
+
+**`scores` fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `alpha` | number | Alpha team cumulative score |
+| `beta` | number | Beta team cumulative score |
+| `completed_maps` | number | Maps fully played (both rounds done) |
+| `match_finished` | boolean | True if match is over |
+| `match_winner` | `"alpha"` \| `"beta"` \| `"draw"` \| null | Winner, or null if still in progress |
+| `round` | object | Summary of the round just processed (see below) |
+
+**`scores.round` fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `map_num` | number | Map number (1–3) |
+| `round_num` | number | Round number within the map (1 or 2) |
+| `winner` | `"alpha"` \| `"beta"` | Which gather team won this round |
+| `winner_et` | number | ET team that won (1=axis, 2=allies) |
+| `alpha_side` | number | ET team alpha was playing as this round |
+| `fullhold` | boolean | True if `timelimit == nextTimeLimit` (defending team held full time) |
+
+---
 
 ### `gamelog`
 
@@ -267,22 +326,23 @@ type SpawnWeapon = "panzerfaust" | "flamethrower" | "mobile_mg42" | "mobile_brow
                  | "sten" | "mp34" | "fg42" | "garand_sniper" | "k43_sniper";
 
 // ─── round_info ────────────────────────────────────────────────────────────
+// Fields marked @deprecated are duplicated in Metadata; prefer reading them there.
 
 interface RoundInfo {
-  servername:       string;
-  config:           string;
+  /** @deprecated prefer metadata.servername */  servername:    string;
+  /** @deprecated prefer metadata.config */      config:        string;
+  /** @deprecated prefer metadata.matchID */     matchID:       string;
+  /** @deprecated prefer metadata.stats_version */ stats_version: string;
+  /** @deprecated prefer metadata.mod_version */ mod_version:   string;
+  /** @deprecated prefer metadata.et_version */  et_version:    string;
+  /** @deprecated prefer metadata.server_ip */   server_ip:     string;
+  /** @deprecated prefer metadata.server_port */ server_port:   string;
   mapname:          string;
   round:            1 | 2;
-  matchID:          string;
-  stats_version:    string;   // stats.lua module version
-  mod_version:      string;   // ETLegacy mod version (mod_version cvar, color codes stripped)
-  et_version:       string;   // Base ET engine version (version cvar, color codes stripped)
   defenderteam:     TeamNumber;
   winnerteam:       TeamNumber;
   timelimit:        string;   // "M:SS"
   nextTimeLimit:    string;
-  server_ip:        string;
-  server_port:      string;
   round_start:      LevelTime;
   round_end:        LevelTime;
   round_start_unix: UnixTime;
@@ -527,11 +587,54 @@ type GamelogEvent =
   | WeaponFireEvent
   | RoundStartEvent | RoundEndEvent;
 
+// ─── metadata ──────────────────────────────────────────────────────────────
+
+interface MatchInfoFeatures {
+  auto_rename?: boolean;
+  auto_sort?:   boolean;
+  auto_start?:  boolean;
+  auto_map?:    boolean;
+  auto_config?: boolean;
+  auto_scores?: boolean;
+}
+
+interface MatchInfoScoresRound {
+  map_num:    number;
+  round_num:  1 | 2;
+  winner:     "alpha" | "beta";
+  winner_et:  TeamNumber;
+  alpha_side: TeamNumber;
+  fullhold:   boolean;
+}
+
+interface MatchInfoScores {
+  alpha:          number;
+  beta:           number;
+  completed_maps: number;
+  match_finished: boolean;
+  match_winner:   "alpha" | "beta" | "draw" | null;
+  round:          MatchInfoScoresRound;
+}
+
+interface Metadata {
+  servername:    string;
+  config:        string;
+  stats_version: string;
+  mod_version:   string;
+  et_version:    string;
+  server_ip:     string;
+  server_port:   string;
+  matchID:       string;
+  features?:     MatchInfoFeatures;  // absent when no gather features active
+  scores?:       MatchInfoScores;    // absent when AUTO_SCORES off or no rounds yet
+}
+
 // ─── Root payload ──────────────────────────────────────────────────────────
 
 interface GameStatsPayload {
   round_info:   RoundInfo;
   player_stats: PlayerStats;
+  metadata?:    Metadata;     // always present when scores module is loaded
   gamelog?:     GamelogEvent[];  // absent when COLLECT_GAMELOG = false
 }
 ```
@@ -594,6 +697,7 @@ non-gather matches.
 | `AUTO_START` | `false` | Countdown to `scheduled_start` from match data and force-start via `ref allready`. Includes a late-join 5-second countdown if all players arrive after the scheduled time. |
 | `AUTO_MAP` | `false` | Automatically switch to the next map in the match rotation after round 2 intermission ends. |
 | `AUTO_CONFIG` | `false` | Apply server config via `ref config <name>` based on roster player count at map 1 round 1 warmup. |
+| `AUTO_SCORES` | `false` | **[EXPERIMENTAL]** Track match scores across a best-of-3 map series using ET stopwatch rules. Embeds current score state into the stats submission as `metadata.scores`. Announces current score in chat during intermission. Requires `auto_scores=true` in match data. |
 | `VERSION_CHECK` | `true` | Check `API_URL_VERSION` at startup and broadcast a chat warning if outdated |
 
 ### [AUTO-CONFIG MAP]
@@ -634,6 +738,7 @@ silently ignored and the defaults above apply.
 | `STATS_API_TOKEN` | `API_TOKEN` |
 | `STATS_API_URL_SUBMIT` | `API_URL_SUBMIT` |
 | `STATS_API_URL_MATCHID` | `API_URL_MATCHID` |
+| `STATS_API_URL_VERSION` | `API_URL_VERSION` |
 | `STATS_API_PATH` | `JSON_FILEPATH` |
 | `STATS_API_LOG_LEVEL` | `LOG_LEVEL` |
 | `STATS_API_LOG` | `LOGGING_ENABLED` (`"true"` / `"false"`) |
@@ -645,12 +750,13 @@ silently ignored and the defaults above apply.
 | `STATS_API_WEAPON_FIRE` | `COLLECT_WEAPON_FIRE` |
 | `STATS_API_DUMPJSON` | `DUMP_STATS_DATA` |
 | `STATS_SUBMIT` | `SUBMIT_TO_API` |
-| `STATS_GATHER_FEATURES` | Shortcut: sets all five gather flags (`AUTO_RENAME`, `AUTO_SORT`, `AUTO_START`, `AUTO_MAP`, `AUTO_CONFIG`) to `true` when `"true"`. Individual flags still apply when unset or `"false"`. |
+| `STATS_GATHER_FEATURES` | Shortcut: sets all gather flags (`AUTO_RENAME`, `AUTO_SORT`, `AUTO_START`, `AUTO_MAP`, `AUTO_CONFIG`, `AUTO_SCORES`) to `true` when `"true"`. Individual flags still apply when unset or `"false"`. |
 | `STATS_AUTO_RENAME` | `AUTO_RENAME` |
 | `STATS_AUTO_SORT` | `AUTO_SORT` |
 | `STATS_AUTO_START` | `AUTO_START` |
 | `STATS_AUTO_MAP` | `AUTO_MAP` |
 | `STATS_AUTO_CONFIG` | `AUTO_CONFIG` |
+| `STATS_AUTO_SCORES` | `AUTO_SCORES` |
 | `STATS_AUTO_START_WAIT_INITIAL` | `AUTO_START_WAIT_INITIAL` |
 | `STATS_AUTO_START_WAIT` | `AUTO_START_WAIT` |
 | `STATS_AUTO_CONFIG_2` | `AUTO_CONFIG_MAP[2]` — server config name for ≤2-player matches |
@@ -696,9 +802,8 @@ Each map is declared under `[maps.<mapname>]`. Supported sub-sections:
 
 ## Gather features
 
-All three gather features (`AUTO_RENAME`, `AUTO_SORT`, `AUTO_START`) require the
-match-manager API to return a route for this server with the corresponding flag set.
-They have no effect on non-gather matches.
+All gather features require the match-manager API to return a route for this server with
+the corresponding flag set. They have no effect on non-gather matches.
 
 ### AUTO_RENAME
 
@@ -730,6 +835,28 @@ Runs a countdown to `scheduled_start` (Unix timestamp from match data) and calls
 players), a notification is sent to the API. If all players join after the scheduled time
 while still in GS_WARMUP, a 5-second late-join countdown triggers automatically.
 
+### AUTO_SCORES
+
+Tracks match scores across a best-of-3 map series using ET stopwatch rules. Score state
+persists across round resets (only wiped when a new `match_id` is detected) and is embedded
+into every stats submission under `match_info.scores`.
+
+Scoring rules:
+
+- **Map win** (team wins both rounds): +2 pts to winner
+- **Map draw** (split 1-1): +1 pt each
+- **Fullhold** (`timelimit == nextTimeLimit`): defending team gets provisional +1 after r1
+  - **Double fullhold** (both teams hold): provisional removed, +1 each
+  - **Normal r2 after r1 fullhold**: provisional removed, normal result applied
+- **Clinch** (only possible at 2-0 + r1 fullhold provisional = 3-0): match ends before r2
+
+Team-side validation runs at every round end: connected player GUIDs are matched against the
+alpha roster from match data. If ≥80% of matched players are on the expected ET team, the
+assignment is confirmed; otherwise the detected side is used. Falls back to the static
+side table if detection is inconclusive.
+
+Possible final scores: **3-0** (clinch), **4-0**, **3-1**, **4-2**, **3-3** (draw).
+
 ---
 
 ### Required Lua libraries
@@ -758,8 +885,9 @@ luascripts/
     ├── gamelog.lua             in-memory event buffer
     ├── events.lua              et_Obituary, et_Damage, et_ClientCommand
     ├── objectives.lua          et_Print pattern matching, buildables, flags, shoves
-    ├── gather.lua              gather features: auto_rename, auto_sort, auto_start
+    ├── gather.lua              gather features: auto_rename, auto_sort, auto_start, auto_scores
     ├── api.lua                 match-ID fetch, version check
+    ├── scores.lua              match score tracking across a best-of-3 series (gather only)
     ├── stats.lua               StoreStats, SaveStats, JSON assembly
     └── gamestate.lua           GS change detection, intermission countdown, reset
 ```

@@ -1,6 +1,6 @@
 --[[
     stats.lua  — root module for ETLegacy game stats collection
-    Version: 2.1.0
+    Version: 2.2.0
 
     All user-facing settings live in the CONFIGURATION block below.
     config.toml is kept only for map-specific patterns and common buildables.
@@ -41,6 +41,7 @@ local AUTO_START                = false  -- foce game start via AUTO_START_WAIT 
 local AUTO_RENAME               = false  -- enforce team names via API
 local AUTO_MAP                  = false  -- switch to next map in rotation after round 2 intermission
 local AUTO_CONFIG               = false  -- apply server config (ref config) based on player count at match start
+local AUTO_SCORES               = false  -- track match scores across maps (best-of-3)
 local VERSION_CHECK             = true
 
 -- [AUTO-CONFIG MAP] player count → server config name
@@ -62,7 +63,7 @@ local SAVE_STATS_DELAY          = 3000   -- ms after intermission before SaveSta
 
 -- [MODULE]
 local MODNAME                   = "stats"
-local VERSION                   = "2.1.0"
+local VERSION                   = "2.2.0"
 
 -- [ENV OVERRIDES]
 -- Any setting above can be overridden by an environment variable of the same
@@ -78,6 +79,7 @@ end
 API_TOKEN                       = os.getenv("STATS_API_TOKEN")          or API_TOKEN
 API_URL_SUBMIT                  = os.getenv("STATS_API_URL_SUBMIT")     or API_URL_SUBMIT
 API_URL_MATCHID                 = os.getenv("STATS_API_URL_MATCHID")    or API_URL_MATCHID
+API_URL_VERSION                 = os.getenv("STATS_API_URL_VERSION")    or API_URL_VERSION
 JSON_FILEPATH                   = os.getenv("STATS_API_PATH")           or JSON_FILEPATH
 LOG_LEVEL                       = os.getenv("STATS_API_LOG_LEVEL")      or LOG_LEVEL
 LOGGING_ENABLED                 = env_bool("STATS_API_LOG",             LOGGING_ENABLED)
@@ -94,6 +96,7 @@ AUTO_SORT                       = env_bool("STATS_AUTO_SORT",           AUTO_SOR
 AUTO_START                      = env_bool("STATS_AUTO_START",          AUTO_START)
 AUTO_MAP                        = env_bool("STATS_AUTO_MAP",            AUTO_MAP)
 AUTO_CONFIG                     = env_bool("STATS_AUTO_CONFIG",         AUTO_CONFIG)
+AUTO_SCORES                     = env_bool("STATS_AUTO_SCORES",         AUTO_SCORES)
 VERSION_CHECK                   = env_bool("STATS_API_VERSION_CHECK",   VERSION_CHECK)
 AUTO_CONFIG_MAP[2]              = os.getenv("STATS_AUTO_CONFIG_2")  or AUTO_CONFIG_MAP[2]
 AUTO_CONFIG_MAP[4]              = os.getenv("STATS_AUTO_CONFIG_4")  or AUTO_CONFIG_MAP[4]
@@ -106,11 +109,12 @@ AUTO_START_WAIT                 = tonumber(os.getenv("STATS_AUTO_START_WAIT"))  
 -- STATS_GATHER_FEATURES=true enables all gather features at once.
 -- Individual flags can still be explicitly overridden (e.g. STATS_AUTO_CONFIG=false).
 if env_bool("STATS_GATHER_FEATURES", false) then
-    if os.getenv("STATS_AUTO_RENAME") == nil then AUTO_RENAME = true end
-    if os.getenv("STATS_AUTO_SORT")   == nil then AUTO_SORT   = true end
-    if os.getenv("STATS_AUTO_START")  == nil then AUTO_START  = true end
-    if os.getenv("STATS_AUTO_MAP")    == nil then AUTO_MAP    = true end
-    if os.getenv("STATS_AUTO_CONFIG") == nil then AUTO_CONFIG = true end
+    if os.getenv("STATS_AUTO_RENAME")  == nil then AUTO_RENAME  = true end
+    if os.getenv("STATS_AUTO_SORT")    == nil then AUTO_SORT    = true end
+    if os.getenv("STATS_AUTO_START")   == nil then AUTO_START   = true end
+    if os.getenv("STATS_AUTO_MAP")     == nil then AUTO_MAP     = true end
+    if os.getenv("STATS_AUTO_CONFIG")  == nil then AUTO_CONFIG  = true end
+    if os.getenv("STATS_AUTO_SCORES")  == nil then AUTO_SCORES  = true end
 end
 
 -- [SUB-MODULES]
@@ -130,6 +134,7 @@ local objectives                = gs_require("objectives")
 local gather                    = gs_require("gather")
 local api                       = gs_require("api")
 local stats                     = gs_require("stats")
+local scores                    = gs_require("scores")
 local gamestate                 = gs_require("gamestate")
 
 -- [RUNTIME VARIABLES]
@@ -166,6 +171,7 @@ local function build_cfg()
         auto_start              = AUTO_START,
         auto_map                = AUTO_MAP,
         auto_config             = AUTO_CONFIG,
+        auto_scores             = AUTO_SCORES,
         auto_config_map         = AUTO_CONFIG_MAP,
         start_wait_initial      = AUTO_START_WAIT_INITIAL,
         start_wait              = AUTO_START_WAIT,
@@ -301,11 +307,12 @@ function et_InitGame()
     gamelog.init(COLLECT_GAMELOG)
     events.init(cfg, log_mod, players, gamelog, objectives)
     objectives.init(cfg, log_mod, players, gamelog)
-    gather.init(cfg, log_mod, http, api)
+    scores.init(cfg, log_mod, http, gamestate)
+    gather.init(cfg, log_mod, http, api, scores)
     api.init(cfg, log_mod, http, gather, VERSION)
     api.set_server_info(server_ip, server_port)
     stats.init(cfg, log_mod, http, api,
-               movement, objectives, events, gamelog, players, VERSION)
+               movement, objectives, events, gamelog, players, VERSION, scores)
     gamestate.init(cfg, log_mod, {
         players    = players,
         movement   = movement,
@@ -315,6 +322,7 @@ function et_InitGame()
         gather     = gather,
         api        = api,
         stats      = stats,
+        scores     = scores,
     })
 
     events.parse_reinf_times()
@@ -336,6 +344,7 @@ function et_InitGame()
         log_mod.debug(string.format("  auto_sort           : %s", bool(AUTO_SORT)))
         log_mod.debug(string.format("  auto_start          : %s", bool(AUTO_START)))
         log_mod.debug(string.format("  auto_map            : %s", bool(AUTO_MAP)))
+        log_mod.debug(string.format("  auto_scores         : %s", bool(AUTO_SCORES)))
         log_mod.debug(string.format("  version_check       : %s", bool(VERSION_CHECK)))
         log_mod.debug(string.format("  api_url_submit      : %s", API_URL_SUBMIT))
         log_mod.debug(string.format("  api_url_matchid     : %s", API_URL_MATCHID))
@@ -350,14 +359,14 @@ function et_InitGame()
         gamestate.round_start_unix = os.time()
         gamelog.round_start()
 
-        if AUTO_RENAME or AUTO_SORT or AUTO_START or AUTO_MAP then
+        if AUTO_RENAME or AUTO_SORT or AUTO_START or AUTO_MAP or AUTO_SCORES then
             log_mod.write("Game already in progress — loading team data from file")
             local cached = {}
             gather.load_team_data_from_file(cached)
             if cached[1] then api.cached_match_id = cached[1] end
         end
     elseif (current_gs == et.GS_WARMUP or current_gs == et.GS_WARMUP_COUNTDOWN)
-        and (AUTO_RENAME or AUTO_SORT or AUTO_START or AUTO_MAP or AUTO_CONFIG) then
+        and (AUTO_RENAME or AUTO_SORT or AUTO_START or AUTO_MAP or AUTO_CONFIG or AUTO_SCORES) then
         log_mod.write(string.format("Warmup (gs=%d) — fetching match data", current_gs))
         local mid = api.fetch_match_id()
         if mid then

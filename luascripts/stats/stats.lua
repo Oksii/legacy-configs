@@ -19,6 +19,7 @@ local objectives_ref
 local events_ref
 local gamelog_ref
 local players_ref
+local scores_ref
 
 local _api_token        = ""
 local _url_submit       = ""
@@ -43,7 +44,8 @@ local PERS_SCORE        = 0
 
 function stats.init(cfg, log_ref, http_module, api_module,
                     movement_module, objectives_module,
-                    events_module, gamelog_module, players_module, version_str)
+                    events_module, gamelog_module, players_module, version_str,
+                    scores_module)
     log            = log_ref
     http_ref       = http_module
     api_ref        = api_module
@@ -52,6 +54,7 @@ function stats.init(cfg, log_ref, http_module, api_module,
     events_ref     = events_module
     gamelog_ref    = gamelog_module
     players_ref    = players_module
+    scores_ref     = scores_module
 
     _api_token          = cfg.api_token             or ""
     _url_submit         = cfg.api_url_submit        or ""
@@ -188,6 +191,12 @@ function stats.save(round_start_time, round_end_time, round_start_unix, round_en
         round_end_unix      = round_end_unix,
     }
 
+    if scores_ref then
+        scores_ref.on_round_end(round_info)
+    end
+
+    local metadata = scores_ref and scores_ref.get_metadata(round_info) or nil
+
     local player_stats = {}
 
     for guid, row_str in pairs(_weapon_stats) do
@@ -276,6 +285,9 @@ function stats.save(round_start_time, round_end_time, round_start_unix, round_en
         round_info   = round_info,
         player_stats = player_stats,
     }
+    if metadata then
+        raw_data.metadata = metadata
+    end
     if gamelog_data then
         raw_data.gamelog = gamelog_data
     end
