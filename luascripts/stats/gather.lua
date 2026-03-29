@@ -1231,12 +1231,12 @@ function gather.on_intermission()
         return
     end
 
-    -- Schedule switch 7s from now
+    -- Schedule switch 10s from now
     _pending_map_switch      = next_map
-    _pending_map_switch_time = os.time() + 7
+    _pending_map_switch_time = os.time() + 10
     if log then
         log.write(string.format(
-            "auto_map: round 2 complete — '%s' → '%s' scheduled in 7s",
+            "auto_map: round 2 complete — '%s' → '%s' scheduled in 10s",
             current_map, next_map))
     end
 end
