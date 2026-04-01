@@ -78,11 +78,6 @@ function ng_scores.is_active()
 end
 
 
-function ng_scores.get_match_id()
-    return _match_id
-end
-
-
 local function check_continuity()
     local stored = {}
     for g in pairs(_alpha_guids) do stored[g] = true end

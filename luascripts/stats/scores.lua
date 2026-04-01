@@ -541,8 +541,4 @@ function scores.is_finished()
     return _match_finished
 end
 
-function scores.get_winner()
-    return _match_winner
-end
-
 return scores

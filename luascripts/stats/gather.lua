@@ -287,15 +287,6 @@ function gather.load_team_data_from_file(cached_match_id_ref)
 end
 
 
-function gather.wipe_team_data_file()
-    local path = get_team_data_file_path(_route_match_id)
-    if not path then return false end
-    local ok = pcall(os.remove, path)
-    if ok and log then log.write("Team data file wiped") end
-    return ok
-end
-
-
 -- Compute scheduled_start and sides_swapped from current map and round.
 -- sides_swapped = (map_index + round) % 2 == 1
 --   map_index 0, round 0 → alpha=Axis (default)
