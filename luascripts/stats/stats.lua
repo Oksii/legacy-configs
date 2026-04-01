@@ -156,7 +156,9 @@ end
 function stats.save(round_start_time, round_end_time, round_start_unix, round_end_unix,
                     server_ip, server_port)
 
-    local match_id = api_ref and api_ref.fetch_match_id() or tostring(os.time())
+    local match_id = (scores_ref and scores_ref.get_match_id())
+                  or (api_ref and api_ref.fetch_match_id())
+                  or tostring(os.time())
 
     local mapname = et.Info_ValueForKey(
         et.trap_GetConfigstring(et.CS_SERVERINFO), "mapname")

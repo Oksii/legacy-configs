@@ -38,6 +38,7 @@ local gamestate_ref
 
 local _auto_scores = false
 local _eff_scores  = false
+local _ng_mode     = false
 
 local _match_id        = nil
 local _alpha_team      = nil   -- alpha roster; used for team-side validation
@@ -92,6 +93,7 @@ function scores.reset_match()
     _fullhold_buffer = {}
     _alpha_teamname  = nil
     _beta_teamname   = nil
+    _ng_mode         = false
     if log then log.write("scores: match state reset") end
 end
 
@@ -120,6 +122,22 @@ function scores.update_match_data(match_id, match_data, features)
         log.write(string.format(
             "scores: match_data updated — match_id=%s eff_scores=%s",
             tostring(match_id), tostring(_eff_scores)))
+    end
+end
+
+
+-- alpha_name / beta_name are raw player names captured at match start.
+function scores.activate_ng_mode(match_id, alpha_name, beta_name)
+    if match_id and (not _match_id or match_id ~= _match_id) then
+        scores.reset_match()
+    end
+    _match_id       = match_id
+    _eff_scores     = true
+    _ng_mode        = true
+    _alpha_teamname = alpha_name or _alpha_teamname
+    _beta_teamname  = beta_name  or _beta_teamname
+    if log then
+        log.write(string.format("scores: ng mode activated — match_id=%s", tostring(match_id)))
     end
 end
 
@@ -179,42 +197,25 @@ end
 
 
 local function build_alpha_guid_set()
-    local set = {}
-    if not _alpha_team then return set end
-    for _, player in ipairs(_alpha_team) do
-        if player.GUID then
-            for _, g in ipairs(player.GUID) do
-                set[string.upper(g)] = true
-            end
-        end
-    end
-    return set
+    if not _alpha_team then return {} end
+    return utils.build_guid_set(_alpha_team)
 end
 
 
--- Scan connected players, count how many alpha roster members are on each team.
+-- Scan connected players (teams only), count how many alpha roster members are on each team.
 local function detect_alpha_side_from_players()
     local alpha_guid_set = build_alpha_guid_set()
     if not next(alpha_guid_set) then return nil end
 
-    local maxC = tonumber(et.trap_Cvar_Get("sv_maxclients")) or 24
     local on_axis   = 0
     local on_allies = 0
     local total     = 0
 
-    for i = 0, maxC - 1 do
-        if et.gentity_get(i, "pers.connected") == 2 then
-            local userinfo = et.trap_GetUserinfo(i)
-            if userinfo and userinfo ~= "" then
-                local guid = string.upper(
-                    et.Info_ValueForKey(userinfo, "cl_guid") or "")
-                if alpha_guid_set[guid] then
-                    total = total + 1
-                    local team = tonumber(et.gentity_get(i, "sess.sessionTeam")) or 0
-                    if team == TEAM_AXIS   then on_axis   = on_axis   + 1 end
-                    if team == TEAM_ALLIES then on_allies = on_allies + 1 end
-                end
-            end
+    for _, p in ipairs(utils.get_connected_players()) do
+        if alpha_guid_set[p.guid] then
+            total = total + 1
+            if p.team == TEAM_AXIS   then on_axis   = on_axis   + 1 end
+            if p.team == TEAM_ALLIES then on_allies = on_allies + 1 end
         end
     end
 
@@ -283,9 +284,10 @@ local function process_r1(map_num, alpha_won, fullhold)
     -- Clinch is ONLY valid at exactly 3-0: one team has 3 points and the
     -- other has 0. Only reachable via: win map1 cleanly (+2) then hold R1
     -- of map2 for the full timelimit (+1 provisional = 3-0).
+    -- Suppressed in ng mode — scores accumulate indefinitely.
     local clinch = (_alpha_score == 3 and _beta_score == 0)
                 or (_beta_score == 3 and _alpha_score == 0)
-    if clinch then
+    if clinch and not _ng_mode then
         _match_finished = true
         _match_winner   = _alpha_score > _beta_score and "alpha" or "beta"
         if log then
@@ -343,12 +345,15 @@ local function process_r2(map_num, alpha_won, fullhold)
         end
     end
 
+    -- Match termination suppressed in ng mode — scores accumulate indefinitely.
     local completed_maps = map_num
-    if completed_maps >= 2 and (_alpha_score >= 3 or _beta_score >= 3) then
-        _match_finished = true
-    end
-    if completed_maps >= 3 then
-        _match_finished = true
+    if not _ng_mode then
+        if completed_maps >= 2 and (_alpha_score >= 3 or _beta_score >= 3) then
+            _match_finished = true
+        end
+        if completed_maps >= 3 then
+            _match_finished = true
+        end
     end
 
     if _match_finished then
