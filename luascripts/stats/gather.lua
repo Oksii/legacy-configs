@@ -194,6 +194,7 @@ end
 
 function gather.save_team_data_to_file(match_id)
     if not _team_data_cache then return false end
+    if not (_match_extra and _match_extra.is_gather) then return false end
     local effective_id = match_id or _route_match_id
     local path = get_team_data_file_path(effective_id)
     if not path then return false end
@@ -240,7 +241,9 @@ function gather.load_team_data_from_file(cached_match_id_ref)
     end)
 
     if ok and result then
-        if result.ng then return false end
+        if result.ng or (result.match_extra and result.match_extra.is_gather == false) then
+            return false
+        end
         if result.match_id then
             if cached_match_id_ref then cached_match_id_ref[1] = result.match_id end
             _route_match_id = result.match_id
@@ -253,10 +256,11 @@ function gather.load_team_data_from_file(cached_match_id_ref)
         if result.match_extra then
             _match_extra = result.match_extra
             -- Re-derive effective flags; gather.init() reset them all to false.
-            _eff_rename  = _auto_rename  and (_match_extra.auto_rename  or false)
-            _eff_sort    = _auto_sort    and (_match_extra.auto_sort    or false)
-            _eff_start   = _auto_start   and (_match_extra.auto_start   or false)
-            _eff_map     = _auto_map     and (_match_extra.auto_map     or false)
+            local is_gather = _match_extra.is_gather or false
+            _eff_rename  = _auto_rename  and is_gather and (_match_extra.auto_rename  or false)
+            _eff_sort    = _auto_sort    and is_gather and (_match_extra.auto_sort    or false)
+            _eff_start   = _auto_start   and is_gather and (_match_extra.auto_start   or false)
+            _eff_map     = _auto_map     and is_gather and (_match_extra.auto_map     or false)
             _eff_scores  = _auto_scores  and (_match_extra.auto_scores  or false)
         end
         -- Pass all effective feature flags to scores so it can include them in metadata
@@ -378,6 +382,7 @@ function gather.on_team_data_fetched(match_id, match_data)
         maps            = match_data.maps            or {},
         channel_id      = match_data.channel_id      or nil,
         server_config   = match_data.server_config   or nil,
+        is_gather       = match_data.is_gather       or false,
     }
 
     -- Static master enable AND match_data must both be true.
@@ -385,11 +390,12 @@ function gather.on_team_data_fetched(match_id, match_data)
     -- from ng routes that carry no team data.
     local _cfg_alpha = match_data.alpha_team and #match_data.alpha_team or 0
     local _cfg_beta  = match_data.beta_team  and #match_data.beta_team  or 0
-    _eff_rename  = _auto_rename  and _match_extra.auto_rename
-    _eff_sort    = _auto_sort    and _match_extra.auto_sort
-    _eff_start   = _auto_start   and _match_extra.auto_start
-    _eff_map     = _auto_map     and _match_extra.auto_map
-    _eff_config  = _auto_config  and (_cfg_alpha + _cfg_beta) > 0
+    local is_gather = _match_extra.is_gather or false
+    _eff_rename  = _auto_rename  and is_gather and _match_extra.auto_rename
+    _eff_sort    = _auto_sort    and is_gather and _match_extra.auto_sort
+    _eff_start   = _auto_start   and is_gather and _match_extra.auto_start
+    _eff_map     = _auto_map     and is_gather and _match_extra.auto_map
+    _eff_config  = _auto_config  and is_gather and (_cfg_alpha + _cfg_beta) > 0
     _eff_scores  = _auto_scores  and _match_extra.auto_scores
 
     -- Pass all effective feature flags to scores so it can include them in metadata
@@ -494,8 +500,8 @@ function gather.is_team_data_available()
 end
 
 
-function gather.is_scores_active()
-    return _eff_scores
+function gather.is_gather()
+    return _match_extra and _match_extra.is_gather or false
 end
 
 

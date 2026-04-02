@@ -128,6 +128,8 @@ gather feature flags, and (when `AUTO_SCORES` is on) the current score state.
 |-------|------|-------------|
 | `alpha` | number | Alpha team cumulative score |
 | `beta` | number | Beta team cumulative score |
+| `alpha_teamname` | string \| null | Alpha team display name (gather: from route; ng: tag-detected) |
+| `beta_teamname` | string \| null | Beta team display name |
 | `completed_maps` | number | Maps fully played (both rounds done) |
 | `match_finished` | boolean | True if match is over |
 | `match_winner` | `"alpha"` \| `"beta"` \| `"draw"` \| null | Winner, or null if still in progress |
@@ -610,6 +612,8 @@ interface MatchInfoScoresRound {
 interface MatchInfoScores {
   alpha:          number;
   beta:           number;
+  alpha_teamname: string | null;
+  beta_teamname:  string | null;
   completed_maps: number;
   match_finished: boolean;
   match_winner:   "alpha" | "beta" | "draw" | null;
@@ -839,19 +843,19 @@ while still in GS_WARMUP, a 5-second late-join countdown triggers automatically.
 Tracks match scores using ET stopwatch rules. Operates in two modes depending on whether a
 gather match is active:
 
-**Gather mode** — activated when `AUTO_SCORES=true` and the match-manager API returns
-`auto_scores=true` in match data. Enforces BO3 termination (match ends at 3 pts or after
-map 3). Score state persists across round resets (wiped only on a new `match_id`).
+**Gather mode** — activated when `AUTO_SCORES=true` and the match-manager route carries
+`is_gather=true`. Enforces BO3 termination (match ends at 3 pts or after map 3). Score state
+persists across round resets (wiped only on a new `match_id`).
 
-**ng (non-gather) mode** — activated when `AUTO_SCORES=true` and no gather match is active
-(scrims, tournaments, public matches). Scores accumulate indefinitely with no BO3 termination.
-Match identity is maintained across `et_InitGame` restarts via GUID continuity: if ≥65% of
-the in-team GUIDs from round 1 are still present at round 2 start, the match continues;
-otherwise a new match is started. State is persisted to `{match_id}_team_data.json` between
-restarts.
+**ng (non-gather) mode** — activated when `AUTO_SCORES=true` and the route does not carry
+`is_gather=true` (scrims, tournaments, public matches). Scores accumulate indefinitely with no
+BO3 termination. Match identity is maintained across `et_InitGame` restarts via GUID
+continuity: if ≥65% of the in-team GUIDs from round 1 are still present at round 2 start, the
+match continues; otherwise a new match is started. State is persisted to
+`{match_id}_team_data.json` between restarts.
 
-Both modes embed the current score state into every stats submission under `metadata.scores`
-and announce the score in chat during intermission.
+Both modes embed the current score state into every stats submission under `metadata.scores` and announce the score in chat during intermission.
+
 
 Scoring rules (both modes):
 

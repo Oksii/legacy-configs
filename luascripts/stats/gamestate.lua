@@ -87,7 +87,7 @@ function gamestate.handle_change(new_gs, server_ip, server_port, frame_time)
             gather_ref.load_team_data_from_file(cached)
         end
 
-        if ng_scores_ref and not (gather_ref and gather_ref.is_scores_active()) then
+        if ng_scores_ref and not (gather_ref and gather_ref.is_gather()) then
             ng_scores_ref.on_round_start()
         end
 
@@ -131,6 +131,10 @@ function gamestate.tick(frame_time, server_ip, server_port)
             and not gamestate.save_stats_state.in_progress then
 
             gamestate.save_stats_state.in_progress = true
+
+            if ng_scores_ref and ng_scores_ref.is_active() then
+                ng_scores_ref.resolve_match_id(api_ref)
+            end
 
             stats_ref.save(
                 gamestate.round_start_time,

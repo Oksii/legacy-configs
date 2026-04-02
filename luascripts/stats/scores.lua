@@ -57,12 +57,11 @@ local _fullhold_buffer = {}
 local TEAM_AXIS   = 1
 local TEAM_ALLIES = 2
 
--- [map_num][round_num] → expected ET team for alpha (1=axis, 2=allies)
-local ALPHA_SIDE_TABLE = {
-    [1] = { [1] = 1, [2] = 2 },
-    [2] = { [1] = 2, [2] = 1 },
-    [3] = { [1] = 1, [2] = 2 },
-}
+-- alpha is axis when (map_num + round_num) is even, allies otherwise.
+-- map1r1=axis(even), map1r2=allies(odd), map2r1=allies(odd), map2r2=axis(even), etc.
+local function alpha_expected_side(map_num, round_num)
+    return ((map_num + round_num) % 2 == 0) and TEAM_AXIS or TEAM_ALLIES
+end
 
 local VALIDATION_THRESHOLD = 0.8   -- 80% of scanned alpha players must confirm side
 
@@ -234,7 +233,7 @@ end
 
 
 local function resolve_alpha_side(map_num, round_num)
-    local expected = (ALPHA_SIDE_TABLE[map_num] or {})[round_num] or TEAM_AXIS
+    local expected = alpha_expected_side(map_num, round_num)
 
     local detected = detect_alpha_side_from_players()
     if detected then
@@ -336,11 +335,14 @@ local function process_r2(map_num, alpha_won, fullhold)
                 alpha_won and "alpha" or "beta", _alpha_score, _beta_score))
         end
     else
-        _alpha_score = _alpha_score + 1
-        _beta_score  = _beta_score  + 1
+        if alpha_won then
+            _alpha_score = _alpha_score + 2
+        else
+            _beta_score  = _beta_score  + 2
+        end
         if log then
             log.write(string.format(
-                "scores: no R1 data for map %d — awarding +1 each as fallback (score %d-%d)",
+                "scores: no R1 data for map %d — awarding +2 to R2 winner as fallback (score %d-%d)",
                 map_num, _alpha_score, _beta_score))
         end
     end
@@ -464,6 +466,8 @@ function scores.get_metadata(round_info)
         info.scores = {
             alpha          = _alpha_score,
             beta           = _beta_score,
+            alpha_teamname = _alpha_teamname or nil,
+            beta_teamname  = _beta_teamname  or nil,
             completed_maps = math.floor(#_round_buffer / 2),
             match_finished = _match_finished,
             match_winner   = _match_winner or nil,
@@ -498,6 +502,11 @@ function scores.get_match_id()
     return _match_id
 end
 
+function scores.set_match_id(id)
+    _match_id = id
+end
+
+
 function scores.get_last_round()
     if #_round_buffer == 0 then return nil end
     return _round_buffer[#_round_buffer]
@@ -515,7 +524,6 @@ end
 
 function scores.announce_score()
     if not _eff_scores then return end
-    if _alpha_score == 0 and _beta_score == 0 then return end
     if gamestate_ref and gamestate_ref.current ~= et.GS_INTERMISSION then return end
 
     local alpha_name = clean_teamname(_alpha_teamname) or "Alpha"

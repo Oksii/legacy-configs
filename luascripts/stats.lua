@@ -368,13 +368,13 @@ function et_InitGame()
             local cached = {}
             gather.load_team_data_from_file(cached)
             if cached[1] then api.cached_match_id = cached[1] end
-            if AUTO_SCORES and not gather.is_scores_active() then
+            if AUTO_SCORES and not gather.is_gather() then
                 ng_scores.load_from_file()
                 _ng_round_start_pending = true
             end
         end
     elseif (current_gs == et.GS_WARMUP or current_gs == et.GS_WARMUP_COUNTDOWN)
-        and (AUTO_RENAME or AUTO_SORT or AUTO_START or AUTO_MAP or AUTO_CONFIG or AUTO_SCORES) then
+        and (AUTO_RENAME or AUTO_SORT or AUTO_START or AUTO_MAP or AUTO_CONFIG) then
         log_mod.write(string.format("Warmup (gs=%d) — fetching match data", current_gs))
         local mid = api.fetch_match_id()
         if mid then

@@ -46,7 +46,7 @@ function ng_scores.init(cfg, log_ref, scores_module, http_module)
     scores_ref   = scores_module
     http_ref     = http_module
     _auto_scores = cfg and cfg.auto_scores or false
-    _api_token   = (cfg and cfg.api_token)  or ""
+    _api_token   = (cfg and cfg.api_token) or ""
 
     -- Derive players endpoint from submit URL: .../etl/matches/stats/submit → .../etl/players/by-guid
     local submit_url = cfg and cfg.api_url_submit or ""
@@ -93,6 +93,14 @@ function ng_scores.on_round_start()
     if not _auto_scores then return end
 
     if _match_id ~= nil then
+        local last = scores_ref and scores_ref.get_last_round()
+        if last and last.round_num == 1 then
+            if scores_ref then scores_ref.activate_ng_mode(_match_id, _alpha_name, _beta_name) end
+            _is_active = true
+            if log then log.write(string.format("ng: R2 start — match continued — match_id=%s", _match_id)) end
+            return
+        end
+
         local same, ratio = check_continuity()
         if log then
             log.write(string.format("ng: continuity check — ratio=%.2f threshold=%.2f same=%s",
@@ -114,21 +122,38 @@ function ng_scores.on_round_start()
         end
     end
 
-    -- New match
+    -- New match: capture team GUIDs for continuity checks; tag/name resolution deferred to intermission.
+    local players = utils.get_connected_players()
+    local n_axis, n_allies = 0, 0
+    _alpha_guids = {}
+    _beta_guids  = {}
+    for _, p in ipairs(players) do
+        if p.team == TEAM_AXIS   then _alpha_guids[p.guid] = true; n_axis   = n_axis   + 1 end
+        if p.team == TEAM_ALLIES then _beta_guids[p.guid]  = true; n_allies = n_allies + 1 end
+    end
+
+    _is_active = true
+
+    if scores_ref then scores_ref.activate_ng_mode(nil, nil, nil) end
+
+    if log then
+        log.write(string.format("ng: new match started — axis=%d allies=%d", n_axis, n_allies))
+    end
+end
+
+
+function ng_scores.resolve_match_id(api_ref)
+    if not _is_active then return end
+    if _match_id then return end
+
     local players    = utils.get_connected_players()
     local alpha_list = {}
     local beta_list  = {}
     for _, p in ipairs(players) do
-        if p.team == TEAM_AXIS   then alpha_list[#alpha_list + 1] = p end
-        if p.team == TEAM_ALLIES then beta_list[#beta_list   + 1] = p end
+        if _alpha_guids[p.guid] then alpha_list[#alpha_list + 1] = p end
+        if _beta_guids[p.guid]  then beta_list[#beta_list   + 1] = p end
     end
 
-    _alpha_guids = {}
-    for _, p in ipairs(alpha_list) do _alpha_guids[p.guid] = true end
-    _beta_guids  = {}
-    for _, p in ipairs(beta_list)  do _beta_guids[p.guid]  = true end
-
-    -- Attempt to determine tag, multiple fallbacks: prefix/suffix detection -> fetch from api -> use playername
     local function build_and_detect(list)
         if #list == 0 then return nil, nil end
         local entries = {}
@@ -150,9 +175,9 @@ function ng_scores.on_round_start()
                     entries[#entries + 1] = {
                         raw       = raw,
                         guid      = p.guid,
-                        first     = #tokens >= 2 and tokens[1]                 or nil,
-                        last      = #tokens >= 2 and tokens[#tokens]           or nil,
-                        raw_first = #raw_tokens >= 2 and raw_tokens[1]         or nil,
+                        first     = #tokens >= 2 and tokens[1]                   or nil,
+                        last      = #tokens >= 2 and tokens[#tokens]             or nil,
+                        raw_first = #raw_tokens >= 2 and raw_tokens[1]           or nil,
                         raw_last  = #raw_tokens >= 2 and raw_tokens[#raw_tokens] or nil,
                     }
                 end
@@ -223,14 +248,17 @@ function ng_scores.on_round_start()
     warn_fallback("Axis",   alpha_source, _alpha_name, alpha_raw)
     warn_fallback("Allies", beta_source,  _beta_name,  beta_raw)
 
-    _match_id  = tostring(os.time())
-    _is_active = true
+    local id = (api_ref and api_ref.fetch_match_id()) or tostring(os.time())
+    _match_id = id
 
-    if scores_ref then scores_ref.activate_ng_mode(_match_id, _alpha_name, _beta_name) end
+    if scores_ref then
+        scores_ref.set_match_id(id)
+        scores_ref.activate_ng_mode(id, _alpha_name, _beta_name)
+    end
 
     if log then
-        log.write(string.format("ng: new match — match_id=%s axis=%d allies=%d alpha_name=%s beta_name=%s",
-            _match_id, #alpha_list, #beta_list,
+        log.write(string.format("ng: match_id resolved — %s alpha=%s beta=%s",
+            id,
             utils.strip_colors(_alpha_name or "nil"),
             utils.strip_colors(_beta_name  or "nil")))
     end
