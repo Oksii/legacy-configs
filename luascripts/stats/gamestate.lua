@@ -18,6 +18,7 @@ local gather_ref
 local api_ref
 local stats_ref
 local scores_ref
+local ng_scores_ref
 
 gamestate.current          = -1
 gamestate._last_gs_raw     = ""
@@ -44,6 +45,7 @@ function gamestate.init(cfg, log_ref, all_modules)
     api_ref        = all_modules.api
     stats_ref      = all_modules.stats
     scores_ref     = all_modules.scores
+    ng_scores_ref  = all_modules.ng_scores
 
     _save_stats_delay = cfg.save_stats_delay or 3000
 end
@@ -59,6 +61,7 @@ function gamestate.reset(server_ip, server_port)
     if stats_ref      then stats_ref.reset()             end
     if gather_ref     then gather_ref.reset()            end
     if scores_ref     then scores_ref.reset()            end
+    if ng_scores_ref  then ng_scores_ref.reset()         end
     if gather_ref     then gather_ref.reset_team_data()  end
     -- team data is cleared here, after stats.save() and the post-save team_data.json
 
@@ -82,6 +85,10 @@ function gamestate.handle_change(new_gs, server_ip, server_port, frame_time)
             -- During playing, only load team data from file (no API calls)
             local cached = { nil }
             gather_ref.load_team_data_from_file(cached)
+        end
+
+        if ng_scores_ref and not (gather_ref and gather_ref.is_gather()) then
+            ng_scores_ref.on_round_start()
         end
 
         if gamelog_ref then gamelog_ref.round_start() end
@@ -125,6 +132,10 @@ function gamestate.tick(frame_time, server_ip, server_port)
 
             gamestate.save_stats_state.in_progress = true
 
+            if ng_scores_ref and ng_scores_ref.is_active() then
+                ng_scores_ref.resolve_match_id(api_ref)
+            end
+
             stats_ref.save(
                 gamestate.round_start_time,
                 gamestate.round_end_time,
@@ -137,6 +148,9 @@ function gamestate.tick(frame_time, server_ip, server_port)
             -- on_team_data_fetched) and survives the et_InitGame VM reset via restore_state().
             local save_match_id = scores_ref and scores_ref.get_match_id() or nil
             if gather_ref then gather_ref.save_team_data_to_file(save_match_id) end
+            if ng_scores_ref and ng_scores_ref.is_active() then
+                ng_scores_ref.save_to_file()
+            end
 
             gamestate.reset(server_ip, server_port)
         end

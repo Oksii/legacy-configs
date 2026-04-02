@@ -175,16 +175,8 @@ function gather.reset_team_data()
 end
 
 
-local function get_team_data_dir()
-    local fs_basepath = et.trap_Cvar_Get("fs_basepath")
-    local fs_game     = et.trap_Cvar_Get("fs_game")
-    if not fs_basepath or not fs_game then return nil end
-    return string.format("%s/%s/luascripts", fs_basepath, fs_game)
-end
-
-
 local function get_team_data_file_path(match_id)
-    local dir = get_team_data_dir()
+    local dir = utils.get_team_data_dir()
     if not dir then return nil end
     if match_id and match_id ~= "" then
         return string.format("%s/%s_team_data.json", dir, match_id)
@@ -202,6 +194,7 @@ end
 
 function gather.save_team_data_to_file(match_id)
     if not _team_data_cache then return false end
+    if not (_match_extra and _match_extra.is_gather) then return false end
     local effective_id = match_id or _route_match_id
     local path = get_team_data_file_path(effective_id)
     if not path then return false end
@@ -248,6 +241,9 @@ function gather.load_team_data_from_file(cached_match_id_ref)
     end)
 
     if ok and result then
+        if result.ng or (result.match_extra and result.match_extra.is_gather == false) then
+            return false
+        end
         if result.match_id then
             if cached_match_id_ref then cached_match_id_ref[1] = result.match_id end
             _route_match_id = result.match_id
@@ -260,10 +256,11 @@ function gather.load_team_data_from_file(cached_match_id_ref)
         if result.match_extra then
             _match_extra = result.match_extra
             -- Re-derive effective flags; gather.init() reset them all to false.
-            _eff_rename  = _auto_rename  and (_match_extra.auto_rename  or false)
-            _eff_sort    = _auto_sort    and (_match_extra.auto_sort    or false)
-            _eff_start   = _auto_start   and (_match_extra.auto_start   or false)
-            _eff_map     = _auto_map     and (_match_extra.auto_map     or false)
+            local is_gather = _match_extra.is_gather or false
+            _eff_rename  = _auto_rename  and is_gather and (_match_extra.auto_rename  or false)
+            _eff_sort    = _auto_sort    and is_gather and (_match_extra.auto_sort    or false)
+            _eff_start   = _auto_start   and is_gather and (_match_extra.auto_start   or false)
+            _eff_map     = _auto_map     and is_gather and (_match_extra.auto_map     or false)
             _eff_scores  = _auto_scores  and (_match_extra.auto_scores  or false)
         end
         -- Pass all effective feature flags to scores so it can include them in metadata
@@ -291,15 +288,6 @@ function gather.load_team_data_from_file(cached_match_id_ref)
         return true
     end
     return false
-end
-
-
-function gather.wipe_team_data_file()
-    local path = get_team_data_file_path(_route_match_id)
-    if not path then return false end
-    local ok = pcall(os.remove, path)
-    if ok and log then log.write("Team data file wiped") end
-    return ok
 end
 
 
@@ -394,18 +382,20 @@ function gather.on_team_data_fetched(match_id, match_data)
         maps            = match_data.maps            or {},
         channel_id      = match_data.channel_id      or nil,
         server_config   = match_data.server_config   or nil,
+        is_gather       = match_data.is_gather       or false,
     }
 
     -- Static master enable AND match_data must both be true.
     -- _eff_config requires roster players (alpha+beta > 0) to distinguish gather matches
-    -- from non-gather routes that carry no team data.
+    -- from ng routes that carry no team data.
     local _cfg_alpha = match_data.alpha_team and #match_data.alpha_team or 0
     local _cfg_beta  = match_data.beta_team  and #match_data.beta_team  or 0
-    _eff_rename  = _auto_rename  and _match_extra.auto_rename
-    _eff_sort    = _auto_sort    and _match_extra.auto_sort
-    _eff_start   = _auto_start   and _match_extra.auto_start
-    _eff_map     = _auto_map     and _match_extra.auto_map
-    _eff_config  = _auto_config  and (_cfg_alpha + _cfg_beta) > 0
+    local is_gather = _match_extra.is_gather or false
+    _eff_rename  = _auto_rename  and is_gather and _match_extra.auto_rename
+    _eff_sort    = _auto_sort    and is_gather and _match_extra.auto_sort
+    _eff_start   = _auto_start   and is_gather and _match_extra.auto_start
+    _eff_map     = _auto_map     and is_gather and _match_extra.auto_map
+    _eff_config  = _auto_config  and is_gather and (_cfg_alpha + _cfg_beta) > 0
     _eff_scores  = _auto_scores  and _match_extra.auto_scores
 
     -- Pass all effective feature flags to scores so it can include them in metadata
@@ -507,6 +497,11 @@ function gather.is_team_data_available()
         and _team_data_cache ~= nil
         and _team_names_cache.alpha_teamname ~= nil
         and _team_names_cache.beta_teamname  ~= nil
+end
+
+
+function gather.is_gather()
+    return _match_extra and _match_extra.is_gather or false
 end
 
 
@@ -859,31 +854,22 @@ scan_players = function(match_data)
     add_roster_team(match_data.alpha_team, TEAM_AXIS)
     add_roster_team(match_data.beta_team,  TEAM_ALLIES)
 
-    local maxClients = tonumber(et.trap_Cvar_Get("sv_maxclients")) or 24
-    for clientNum = 0, maxClients - 1 do
-        if et.gentity_get(clientNum, "pers.connected") == 2 then
-            local userinfo = et.trap_GetUserinfo(clientNum)
-            if userinfo and userinfo ~= "" then
-                local guid   = string.upper(et.Info_ValueForKey(userinfo, "cl_guid") or "")
-                local ingame = et.Info_ValueForKey(userinfo, "name") or ""
-                local team   = tonumber(et.gentity_get(clientNum, "sess.sessionTeam")) or 0
-                local entry  = guid ~= "" and roster[guid] or nil
-
-                if entry then
-                    entry.found = true
-                    table.insert(connected, {
-                        guid       = guid,
-                        discord_id = entry.discord_id,
-                        name       = entry.name,
-                    })
-                else
-                    table.insert(unknown, {
-                        guid        = guid,
-                        ingame_name = ingame,
-                        team        = team,
-                    })
-                end
-            end
+    for _, p in ipairs(utils.get_connected_players()) do
+        local entry  = p.guid ~= "" and roster[p.guid] or nil
+        local ingame = et.Info_ValueForKey(et.trap_GetUserinfo(p.clientNum) or "", "name") or ""
+        if entry then
+            entry.found = true
+            table.insert(connected, {
+                guid       = p.guid,
+                discord_id = entry.discord_id,
+                name       = entry.name,
+            })
+        else
+            table.insert(unknown, {
+                guid        = p.guid,
+                ingame_name = ingame,
+                team        = p.team,
+            })
         end
     end
 
@@ -915,13 +901,9 @@ end
 local function count_ingame_teams()
     local axis   = 0
     local allies = 0
-    local maxClients = tonumber(et.trap_Cvar_Get("sv_maxclients")) or 24
-    for clientNum = 0, maxClients - 1 do
-        if et.gentity_get(clientNum, "pers.connected") == 2 then
-            local team = tonumber(et.gentity_get(clientNum, "sess.sessionTeam")) or 0
-            if team == TEAM_AXIS   then axis   = axis   + 1 end
-            if team == TEAM_ALLIES then allies = allies + 1 end
-        end
+    for _, p in ipairs(utils.get_connected_players()) do
+        if p.team == TEAM_AXIS   then axis   = axis   + 1 end
+        if p.team == TEAM_ALLIES then allies = allies + 1 end
     end
     return axis, allies
 end

@@ -145,4 +145,97 @@ function utils.cp(msg)
     et.trap_SendServerCommand(-1, "cp \"" .. msg .. "\"")
 end
 
+
+-- Returns array of { guid=string(upper), team=number, clientNum=number }
+-- for every connected player on teams 1 (axis) or 2 (allies).
+-- Spectators (team 3+) are always excluded.
+function utils.get_connected_players(maxClients)
+    maxClients = maxClients or (tonumber(et.trap_Cvar_Get("sv_maxclients")) or 24)
+    local players = {}
+    for i = 0, maxClients - 1 do
+        if et.gentity_get(i, "pers.connected") == 2 then
+            local team = tonumber(et.gentity_get(i, "sess.sessionTeam")) or 0
+            if team == 1 or team == 2 then
+                local userinfo = et.trap_GetUserinfo(i)
+                if userinfo and userinfo ~= "" then
+                    local guid = string.upper(et.Info_ValueForKey(userinfo, "cl_guid") or "")
+                    if guid ~= "" then
+                        players[#players + 1] = { guid = guid, team = team, clientNum = i }
+                    end
+                end
+            end
+        end
+    end
+    return players
+end
+
+
+function utils.build_guid_set(team_array)
+    local set = {}
+    for _, player in ipairs(team_array or {}) do
+        for _, g in ipairs(player.GUID or {}) do
+            set[string.upper(g)] = true
+        end
+    end
+    return set
+end
+
+
+function utils.guid_overlap(guid_set, players_array)
+    local set_size = 0
+    for _ in pairs(guid_set) do set_size = set_size + 1 end
+    local count = 0
+    for _, p in ipairs(players_array) do
+        if guid_set[p.guid] then count = count + 1 end
+    end
+    local denom = math.max(set_size, #players_array)
+    return count, (denom > 0 and count / denom or 0)
+end
+
+
+function utils.fetch_player_tags(guids, api_token, players_url, http_module)
+    if not http_module or not players_url or not players_url:find("^https?://") then return {} end
+    if not guids or #guids == 0 then return {} end
+
+    local parts = {}
+    for _, g in ipairs(guids) do
+        parts[#parts + 1] = "guid=" .. g
+    end
+    local url = players_url .. "?" .. table.concat(parts, "&")
+    local cmd = string.format(
+        "curl -H \"Authorization: Bearer %s\"" ..
+        " --connect-timeout 1 --max-time 1 --retry 0 --silent --compressed \"%s\"",
+        api_token or "", url)
+
+    local result = http_module.sync(cmd)
+    if type(result) ~= "table" then return {} end
+
+    local out = {}
+    for _, v in ipairs(result) do
+        if type(v) == "table" and type(v.guid) == "string" then
+            local raw_tag = v.user_tag_no_separator or v.user_tag
+            if raw_tag and raw_tag ~= "" then
+                -- Tags are comma-separated; strip {name}, split, pick one at random
+                local candidates = {}
+                for t in raw_tag:gmatch("[^,]+") do
+                    t = t:gsub("{name}", ""):match("^%s*(.-)%s*$")
+                    if t ~= "" then candidates[#candidates + 1] = t end
+                end
+                if #candidates > 0 then
+                    out[v.guid:upper()] = candidates[math.random(#candidates)]
+                end
+            end
+        end
+    end
+    return out
+end
+
+
+function utils.get_team_data_dir()
+    local fs_basepath = et.trap_Cvar_Get("fs_basepath")
+    local fs_game     = et.trap_Cvar_Get("fs_game")
+    if not fs_basepath or not fs_game then return nil end
+    return string.format("%s/%s/luascripts", fs_basepath, fs_game)
+end
+
 return utils
