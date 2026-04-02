@@ -1,6 +1,6 @@
 --[[
     stats.lua  — root module for ETLegacy game stats collection
-    Version: 2.2.0
+    Version: 2.2.1
 
     All user-facing settings live in the CONFIGURATION block below.
     config.toml is kept only for map-specific patterns and common buildables.
@@ -41,7 +41,7 @@ local AUTO_START                = false  -- foce game start via AUTO_START_WAIT 
 local AUTO_RENAME               = false  -- enforce team names via API
 local AUTO_MAP                  = false  -- switch to next map in rotation after round 2 intermission
 local AUTO_CONFIG               = false  -- apply server config (ref config) based on player count at match start
-local AUTO_SCORES               = false  -- track match scores across maps (best-of-3)
+local AUTO_SCORES               = true   -- track match scores across maps
 local VERSION_CHECK             = true
 
 -- [AUTO-CONFIG MAP] player count → server config name
@@ -63,7 +63,7 @@ local SAVE_STATS_DELAY          = 3000   -- ms after intermission before SaveSta
 
 -- [MODULE]
 local MODNAME                   = "stats"
-local VERSION                   = "2.2.0"
+local VERSION                   = "2.2.1"
 
 -- [ENV OVERRIDES]
 -- Any setting above can be overridden by an environment variable of the same
@@ -135,6 +135,7 @@ local gather                    = gs_require("gather")
 local api                       = gs_require("api")
 local stats                     = gs_require("stats")
 local scores                    = gs_require("scores")
+local ng_scores                 = gs_require("ng_scores")
 local gamestate                 = gs_require("gamestate")
 
 -- [RUNTIME VARIABLES]
@@ -147,6 +148,7 @@ local common_buildables         = {}
 local next_store_time           = 0
 local level_time                = 0
 local _deferred_init_pending    = false
+local _ng_round_start_pending   = false
 
 -- [SHARED CONFIG TABLE] (passed to modules at init)
 local function build_cfg()
@@ -308,6 +310,7 @@ function et_InitGame()
     events.init(cfg, log_mod, players, gamelog, objectives)
     objectives.init(cfg, log_mod, players, gamelog)
     scores.init(cfg, log_mod, http, gamestate)
+    ng_scores.init(cfg, log_mod, scores, http)
     gather.init(cfg, log_mod, http, api, scores)
     api.init(cfg, log_mod, http, gather, VERSION)
     api.set_server_info(server_ip, server_port)
@@ -323,6 +326,7 @@ function et_InitGame()
         api        = api,
         stats      = stats,
         scores     = scores,
+        ng_scores  = ng_scores,
     })
 
     events.parse_reinf_times()
@@ -364,9 +368,13 @@ function et_InitGame()
             local cached = {}
             gather.load_team_data_from_file(cached)
             if cached[1] then api.cached_match_id = cached[1] end
+            if AUTO_SCORES and not gather.is_gather() then
+                ng_scores.load_from_file()
+                _ng_round_start_pending = true
+            end
         end
     elseif (current_gs == et.GS_WARMUP or current_gs == et.GS_WARMUP_COUNTDOWN)
-        and (AUTO_RENAME or AUTO_SORT or AUTO_START or AUTO_MAP or AUTO_CONFIG or AUTO_SCORES) then
+        and (AUTO_RENAME or AUTO_SORT or AUTO_START or AUTO_MAP or AUTO_CONFIG) then
         log_mod.write(string.format("Warmup (gs=%d) — fetching match data", current_gs))
         local mid = api.fetch_match_id()
         if mid then
@@ -404,6 +412,14 @@ function et_RunFrame(frame_level_time)
     if _deferred_init_pending then
         _deferred_init_pending = false
         api.check_version()
+    end
+
+    if _ng_round_start_pending then
+        local team_players = utils.get_connected_players()
+        if #team_players > 0 then
+            _ng_round_start_pending = false
+            ng_scores.on_round_start()
+        end
     end
 
     events.set_level_time(level_time)

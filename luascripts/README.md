@@ -128,6 +128,8 @@ gather feature flags, and (when `AUTO_SCORES` is on) the current score state.
 |-------|------|-------------|
 | `alpha` | number | Alpha team cumulative score |
 | `beta` | number | Beta team cumulative score |
+| `alpha_teamname` | string \| null | Alpha team display name (gather: from route; ng: tag-detected) |
+| `beta_teamname` | string \| null | Beta team display name |
 | `completed_maps` | number | Maps fully played (both rounds done) |
 | `match_finished` | boolean | True if match is over |
 | `match_winner` | `"alpha"` \| `"beta"` \| `"draw"` \| null | Winner, or null if still in progress |
@@ -610,6 +612,8 @@ interface MatchInfoScoresRound {
 interface MatchInfoScores {
   alpha:          number;
   beta:           number;
+  alpha_teamname: string | null;
+  beta_teamname:  string | null;
   completed_maps: number;
   match_finished: boolean;
   match_winner:   "alpha" | "beta" | "draw" | null;
@@ -687,8 +691,7 @@ The match-ID endpoint is called as `GET {API_URL_MATCHID}/{server_ip}/{server_po
 ### [GATHER FEATURES]
 
 Gather features only activate when the match-manager API returns a route for this server with
-the corresponding flag set (`auto_rename`, `auto_sort`, `auto_start`). They have no effect on
-non-gather matches.
+the corresponding flag set (`auto_rename`, `auto_sort`, `auto_start`). They have no effect on ng (non-gather) matches.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -697,7 +700,7 @@ non-gather matches.
 | `AUTO_START` | `false` | Countdown to `scheduled_start` from match data and force-start via `ref allready`. Includes a late-join 5-second countdown if all players arrive after the scheduled time. |
 | `AUTO_MAP` | `false` | Automatically switch to the next map in the match rotation after round 2 intermission ends. |
 | `AUTO_CONFIG` | `false` | Apply server config via `ref config <name>` based on roster player count at map 1 round 1 warmup. |
-| `AUTO_SCORES` | `false` | **[EXPERIMENTAL]** Track match scores across a best-of-3 map series using ET stopwatch rules. Embeds current score state into the stats submission as `metadata.scores`. Announces current score in chat during intermission. Requires `auto_scores=true` in match data. |
+| `AUTO_SCORES` | `false` | Track match scores using ET stopwatch rules. Active for **gather matches** (requires `auto_scores=true` in match data, BO3 termination enforced) and **ng matches** (always-on when no gather match is active, scores accumulate indefinitely). Embeds current score state into stats submissions as `metadata.scores`. Announces score in chat during intermission. |
 | `VERSION_CHECK` | `true` | Check `API_URL_VERSION` at startup and broadcast a chat warning if outdated |
 
 ### [AUTO-CONFIG MAP]
@@ -803,7 +806,7 @@ Each map is declared under `[maps.<mapname>]`. Supported sub-sections:
 ## Gather features
 
 All gather features require the match-manager API to return a route for this server with
-the corresponding flag set. They have no effect on non-gather matches.
+the corresponding flag set. They have no effect on ng (non-gather) matches.
 
 ### AUTO_RENAME
 
@@ -837,25 +840,38 @@ while still in GS_WARMUP, a 5-second late-join countdown triggers automatically.
 
 ### AUTO_SCORES
 
-Tracks match scores across a best-of-3 map series using ET stopwatch rules. Score state
-persists across round resets (only wiped when a new `match_id` is detected) and is embedded
-into every stats submission under `match_info.scores`.
+Tracks match scores using ET stopwatch rules. Operates in two modes depending on whether a
+gather match is active:
 
-Scoring rules:
+**Gather mode** — activated when `AUTO_SCORES=true` and the match-manager route carries
+`is_gather=true`. Enforces BO3 termination (match ends at 3 pts or after map 3). Score state
+persists across round resets (wiped only on a new `match_id`).
+
+**ng (non-gather) mode** — activated when `AUTO_SCORES=true` and the route does not carry
+`is_gather=true` (scrims, tournaments, public matches). Scores accumulate indefinitely with no
+BO3 termination. Match identity is maintained across `et_InitGame` restarts via GUID
+continuity: if ≥65% of the in-team GUIDs from round 1 are still present at round 2 start, the
+match continues; otherwise a new match is started. State is persisted to
+`{match_id}_team_data.json` between restarts.
+
+Both modes embed the current score state into every stats submission under `metadata.scores` and announce the score in chat during intermission.
+
+
+Scoring rules (both modes):
 
 - **Map win** (team wins both rounds): +2 pts to winner
 - **Map draw** (split 1-1): +1 pt each
 - **Fullhold** (`timelimit == nextTimeLimit`): defending team gets provisional +1 after r1
   - **Double fullhold** (both teams hold): provisional removed, +1 each
   - **Normal r2 after r1 fullhold**: provisional removed, normal result applied
-- **Clinch** (only possible at 2-0 + r1 fullhold provisional = 3-0): match ends before r2
+- **Clinch** (only possible at 2-0 + r1 fullhold provisional = 3-0): match ends before r2 *(gather only)*
 
-Team-side validation runs at every round end: connected player GUIDs are matched against the
-alpha roster from match data. If ≥80% of matched players are on the expected ET team, the
-assignment is confirmed; otherwise the detected side is used. Falls back to the static
-side table if detection is inconclusive.
+Team-side validation (gather mode): connected player GUIDs are matched against the alpha
+roster from match data. If ≥80% of matched players are on the expected ET team, the assignment
+is confirmed; otherwise the detected side is used. Falls back to the static side table if
+detection is inconclusive.
 
-Possible final scores: **3-0** (clinch), **4-0**, **3-1**, **4-2**, **3-3** (draw).
+Possible final scores (gather): **3-0** (clinch), **4-0**, **3-1**, **4-2**, **3-3** (draw).
 
 ---
 
@@ -878,7 +894,7 @@ luascripts/
     ├── util/
     │   ├── log.lua             timestamped file logger (info / debug levels)
     │   ├── http.lua            async/sync curl helpers
-    │   └── utils.lua           strip_colors, normalize, sanitize, distance, …
+    │   └── utils.lua           strip_colors, normalize, sanitize, distance, get_connected_players, …
     ├── config.lua              TOML loader
     ├── players.lua             GUID cache, get_snapshot(), class-switch detection
     ├── movement.lua            per-frame stance + distance + speed tracking
@@ -887,7 +903,8 @@ luascripts/
     ├── objectives.lua          et_Print pattern matching, buildables, flags, shoves
     ├── gather.lua              gather features: auto_rename, auto_sort, auto_start, auto_scores
     ├── api.lua                 match-ID fetch, version check
-    ├── scores.lua              match score tracking across a best-of-3 series (gather only)
+    ├── scores.lua              match score tracking (gather + ng modes)
+    ├── ng_scores.lua           ng match lifecycle: GUID continuity, persistence, roster
     ├── stats.lua               StoreStats, SaveStats, JSON assembly
     └── gamestate.lua           GS change detection, intermission countdown, reset
 ```
