@@ -20,6 +20,7 @@ local utils = require("luascripts/stats/util/utils")
 local log
 local scores_ref
 local http_ref
+local gather_ref
 
 local _auto_scores  = false
 local _api_token    = ""
@@ -41,10 +42,11 @@ local _beta_name   = nil   -- player name from first allies player at match star
 local _is_active   = false
 
 
-function ng_scores.init(cfg, log_ref, scores_module, http_module)
+function ng_scores.init(cfg, log_ref, scores_module, http_module, gather_module)
     log          = log_ref
     scores_ref   = scores_module
     http_ref     = http_module
+    gather_ref   = gather_module
     _auto_scores = cfg and cfg.auto_scores or false
     _api_token   = (cfg and cfg.api_token) or ""
 
@@ -95,7 +97,7 @@ function ng_scores.on_round_start()
     if _match_id ~= nil then
         local last = scores_ref and scores_ref.get_last_round()
         if last and last.round_num == 1 then
-            if scores_ref then scores_ref.activate_ng_mode(_match_id, _alpha_name, _beta_name) end
+            if scores_ref then scores_ref.activate_ng_mode(_match_id, _alpha_name, _beta_name, _alpha_guids) end
             _is_active = true
             if log then log.write(string.format("ng: R2 start — match continued — match_id=%s", _match_id)) end
             return
@@ -115,7 +117,7 @@ function ng_scores.on_round_start()
             ng_scores.reset_match()
         else
             -- Same match confirmed
-            if scores_ref then scores_ref.activate_ng_mode(_match_id, _alpha_name, _beta_name) end
+            if scores_ref then scores_ref.activate_ng_mode(_match_id, _alpha_name, _beta_name, _alpha_guids) end
             _is_active = true
             if log then log.write(string.format("ng: match continued — match_id=%s", _match_id)) end
             return
@@ -134,7 +136,7 @@ function ng_scores.on_round_start()
 
     _is_active = true
 
-    if scores_ref then scores_ref.activate_ng_mode(nil, nil, nil) end
+    if scores_ref then scores_ref.activate_ng_mode(nil, nil, nil, _alpha_guids) end
 
     if log then
         log.write(string.format("ng: new match started — axis=%d allies=%d", n_axis, n_allies))
@@ -188,20 +190,35 @@ function ng_scores.resolve_match_id(api_ref)
         local threshold = math.ceil(#entries * TAG_THRESHOLD)
         local function best_tag(get_tok, get_raw_tok)
             local freq = {}
+            local order = {}
             for _, e in ipairs(entries) do
                 local t = get_tok(e)
                 if t then
-                    local lc = t:lower()
+                    local clean = t:match("^%s*(.-)%s*$") or ""
+                    local lc = clean:lower()
                     if #lc >= TAG_MIN_LEN and #lc <= TAG_MAX_LEN then
                         if not freq[lc] then
-                            freq[lc] = { raw = get_raw_tok(e) or t, count = 0 }
+                            freq[lc] = { tag = clean, count = 0 }
+                            order[#order + 1] = lc
                         end
                         freq[lc].count = freq[lc].count + 1
                     end
                 end
             end
-            for _, v in pairs(freq) do
-                if v.count >= threshold then return v.raw end
+            for _, key in ipairs(order) do
+                local v = freq[key]
+                if v.count >= threshold then
+                    for _, e in ipairs(entries) do
+                        local raw_tok = get_raw_tok(e)
+                        if raw_tok then
+                            local raw_clean = utils.strip_colors(raw_tok):match("^%s*(.-)%s*$") or ""
+                            if raw_clean:lower() == key then
+                                return raw_tok
+                            end
+                        end
+                    end
+                    return v.tag
+                end
             end
         end
         local tag = best_tag(function(e) return e.first end, function(e) return e.raw_first end)
@@ -253,7 +270,7 @@ function ng_scores.resolve_match_id(api_ref)
 
     if scores_ref then
         scores_ref.set_match_id(id)
-        scores_ref.activate_ng_mode(id, _alpha_name, _beta_name)
+        scores_ref.activate_ng_mode(id, _alpha_name, _beta_name, _alpha_guids)
     end
 
     if log then
@@ -316,6 +333,10 @@ end
 
 function ng_scores.load_from_file()
     if not _auto_scores then return false end
+    if gather_ref and gather_ref.is_gather() then
+        if log then log.write("ng: load_from_file skipped — gather match is active") end
+        return false
+    end
 
     local dir = utils.get_team_data_dir()
     if not dir then return false end
@@ -372,7 +393,7 @@ function ng_scores.load_from_file()
     end
 
     if scores_ref then
-        scores_ref.activate_ng_mode(_match_id, _alpha_name, _beta_name)
+        scores_ref.activate_ng_mode(_match_id, _alpha_name, _beta_name, _alpha_guids)
         if result.scores_state then
             scores_ref.restore_state(result.scores_state)
         end
