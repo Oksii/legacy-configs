@@ -1,6 +1,6 @@
 --[[
     stats.lua  — root module for ETLegacy game stats collection
-    Version: 2.2.1
+    Version: 2.2.2
 
     All user-facing settings live in the CONFIGURATION block below.
     config.toml is kept only for map-specific patterns and common buildables.
@@ -63,7 +63,7 @@ local SAVE_STATS_DELAY          = 3000   -- ms after intermission before SaveSta
 
 -- [MODULE]
 local MODNAME                   = "stats"
-local VERSION                   = "2.2.1"
+local VERSION                   = "2.2.2"
 
 -- [ENV OVERRIDES]
 -- Any setting above can be overridden by an environment variable of the same
@@ -310,7 +310,7 @@ function et_InitGame()
     events.init(cfg, log_mod, players, gamelog, objectives)
     objectives.init(cfg, log_mod, players, gamelog)
     scores.init(cfg, log_mod, http, gamestate)
-    ng_scores.init(cfg, log_mod, scores, http)
+    ng_scores.init(cfg, log_mod, scores, http, gather)
     gather.init(cfg, log_mod, http, api, scores)
     api.init(cfg, log_mod, http, gather, VERSION)
     api.set_server_info(server_ip, server_port)

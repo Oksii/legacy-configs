@@ -53,17 +53,19 @@ local _beta_score      = 0
 local _match_finished  = false
 local _match_winner    = nil  -- "alpha" | "beta" | "draw"
 local _fullhold_buffer = {}
+local _ng_alpha_guids  = {}   -- alpha GUID set supplied by ng_scores for side detection
 
 local TEAM_AXIS   = 1
 local TEAM_ALLIES = 2
 
 -- alpha is axis when (map_num + round_num) is even, allies otherwise.
--- map1r1=axis(even), map1r2=allies(odd), map2r1=allies(odd), map2r2=axis(even), etc.
+-- Verified: map1r1=axis(even), map1r2=allies(odd), map2r1=allies(odd), map2r2=axis(even), etc.
 local function alpha_expected_side(map_num, round_num)
     return ((map_num + round_num) % 2 == 0) and TEAM_AXIS or TEAM_ALLIES
 end
 
-local VALIDATION_THRESHOLD = 0.8   -- 80% of scanned alpha players must confirm side
+local VALIDATION_THRESHOLD = 0.8   -- 80% of scanned alpha players must confirm side (gather)
+local NG_SIDE_THRESHOLD    = 0.65  -- 65% threshold for ng mode (accommodates subs)
 
 
 -- http_module kept for interface compatibility; scores no longer makes its own HTTP calls.
@@ -90,6 +92,7 @@ function scores.reset_match()
     _match_finished  = false
     _match_winner    = nil
     _fullhold_buffer = {}
+    _ng_alpha_guids  = {}
     _alpha_teamname  = nil
     _beta_teamname   = nil
     _ng_mode         = false
@@ -126,7 +129,8 @@ end
 
 
 -- alpha_name / beta_name are raw player names captured at match start.
-function scores.activate_ng_mode(match_id, alpha_name, beta_name)
+-- alpha_guids is the GUID set from ng_scores (optional; preserved across calls if nil).
+function scores.activate_ng_mode(match_id, alpha_name, beta_name, alpha_guids)
     if match_id and (not _match_id or match_id ~= _match_id) then
         scores.reset_match()
     end
@@ -135,6 +139,7 @@ function scores.activate_ng_mode(match_id, alpha_name, beta_name)
     _ng_mode        = true
     _alpha_teamname = alpha_name or _alpha_teamname
     _beta_teamname  = beta_name  or _beta_teamname
+    if alpha_guids ~= nil then _ng_alpha_guids = alpha_guids end
     if log then
         log.write(string.format("scores: ng mode activated — match_id=%s", tostring(match_id)))
     end
@@ -196,8 +201,9 @@ end
 
 
 local function build_alpha_guid_set()
-    if not _alpha_team then return {} end
-    return utils.build_guid_set(_alpha_team)
+    if _alpha_team then return utils.build_guid_set(_alpha_team) end
+    if _ng_mode    then return _ng_alpha_guids end
+    return {}
 end
 
 
@@ -220,8 +226,9 @@ local function detect_alpha_side_from_players()
 
     if total == 0 then return nil end
 
-    if on_axis   / total >= VALIDATION_THRESHOLD then return TEAM_AXIS   end
-    if on_allies / total >= VALIDATION_THRESHOLD then return TEAM_ALLIES end
+    local threshold = _ng_mode and NG_SIDE_THRESHOLD or VALIDATION_THRESHOLD
+    if on_axis   / total >= threshold then return TEAM_AXIS   end
+    if on_allies / total >= threshold then return TEAM_ALLIES end
 
     if log then
         log.write(string.format(
