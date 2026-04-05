@@ -1,6 +1,6 @@
 --[[
     stats.lua  — root module for ETLegacy game stats collection
-    Version: 2.2.2
+    Version: 2.2.3
 
     All user-facing settings live in the CONFIGURATION block below.
     config.toml is kept only for map-specific patterns and common buildables.
@@ -63,7 +63,7 @@ local SAVE_STATS_DELAY          = 3000   -- ms after intermission before SaveSta
 
 -- [MODULE]
 local MODNAME                   = "stats"
-local VERSION                   = "2.2.2"
+local VERSION                   = "2.2.3"
 
 -- [ENV OVERRIDES]
 -- Any setting above can be overridden by an environment variable of the same
