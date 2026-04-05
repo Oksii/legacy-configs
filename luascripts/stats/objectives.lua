@@ -34,10 +34,64 @@ local recent_announcements  = {}
 local ANNOUNCE_BUFFER       = 5
 local REPAIR_BUFFER_MS      = 2000
 local MAX_OBJ_DISTANCE      = 500  -- game units
+local pending_pickup        = nil
 
 -- Active map config
 local _map_config           = nil
 local _common_buildables    = nil
+
+
+local function flush_pending_pickup()
+    if pending_pickup and _collect_gamelog and gamelog_ref and pending_pickup.player_snap then
+        gamelog_ref.pickup(pending_pickup.player_snap, pending_pickup.item, pending_pickup.owner_snap)
+    end
+    pending_pickup = nil
+end
+
+
+local function queue_item_pickup(clientNum, item)
+    local entry = players_ref.guids[clientNum]
+    if not entry or not entry.guid or entry.guid == "WORLD" then return end
+
+    pending_pickup = {
+        clientNum   = clientNum,
+        item        = item,
+        player_snap = players_ref.get_snapshot(clientNum) or { guid = entry.guid },
+        owner_snap  = nil,
+    }
+end
+
+
+local function emit_direct_pickup(player_id, owner_id, item)
+    local player_entry = players_ref.guids[player_id]
+    if not player_entry or not player_entry.guid or player_entry.guid == "WORLD" then return end
+
+    local player_snap = players_ref.get_snapshot(player_id) or { guid = player_entry.guid }
+    local owner_entry = owner_id and players_ref.guids[owner_id] or nil
+    local owner_snap  = owner_entry and owner_entry.guid and owner_entry.guid ~= "WORLD"
+        and (players_ref.get_snapshot(owner_id) or { guid = owner_entry.guid })
+        or nil
+
+    if _collect_gamelog and gamelog_ref then
+        gamelog_ref.pickup(player_snap, item, owner_snap)
+    end
+end
+
+
+local function attach_pickup_owner(owner_id, player_id, item)
+    if pending_pickup
+    and pending_pickup.clientNum == player_id
+    and pending_pickup.item == item then
+        local owner_entry = players_ref.guids[owner_id]
+        pending_pickup.owner_snap = owner_entry and owner_entry.guid and owner_entry.guid ~= "WORLD"
+            and (players_ref.get_snapshot(owner_id) or { guid = owner_entry.guid })
+            or nil
+        flush_pending_pickup()
+        return
+    end
+
+    emit_direct_pickup(player_id, owner_id, item)
+end
 
 
 local function record_obj_stat(guid, event_type, objective, killer_info)
@@ -376,10 +430,62 @@ end
 
 
 function objectives.handle_print(text)
+    local current_time = et.trap_Milliseconds()
+    local _ = current_time
+
+    -- Gamelog-only pickup events are coalesced from adjacent Item + pack-owner lines.
+    if _collect_gamelog and gamelog_ref and string.find(text, "Ammo_Pack:", 1, true) then
+        local owner_str, player_str = text:match("Ammo_Pack:%s*(%d+)%s+(%d+)")
+        if player_str and owner_str then
+            attach_pickup_owner(tonumber(owner_str), tonumber(player_str), "weapon_magicammo")
+            return
+        end
+    end
+
+    if _collect_gamelog and gamelog_ref and string.find(text, "Health_Pack:", 1, true) then
+        local owner_str, player_str = text:match("Health_Pack:%s*(%d+)%s+(%d+)")
+        if player_str and owner_str then
+            attach_pickup_owner(tonumber(owner_str), tonumber(player_str), "item_health")
+            return
+        end
+    end
+
+    if pending_pickup then
+        flush_pending_pickup()
+    end
+
+    if _collect_gamelog and gamelog_ref and string.find(text, "Item:", 1, true) then
+        local id_str, item = text:match("Item:%s*(%d+)%s+(%S+)")
+        if id_str and item
+        and item ~= "team_CTF_redflag"
+        and item ~= "team_CTF_blueflag"
+        and (item == "item_health" or item == "weapon_magicammo" or string.find(item, "^weapon_")) then
+            queue_item_pickup(tonumber(id_str), item)
+            return
+        end
+    end
+
+    -- Shove tracking does not depend on map objective config either.
+    if _collect_shovestats and string.find(text, "Shove:", 1, true) then
+        local shover_str, target_str = text:match("^Shove: (%d+) (%d+)")
+        if shover_str then
+            local shover_entry = players_ref.guids[tonumber(shover_str)]
+            local target_entry = players_ref.guids[tonumber(target_str)]
+            if shover_entry and target_entry then
+                local shover_guid = shover_entry.guid
+                local target_guid = target_entry.guid
+                record_obj_stat(shover_guid, "shoves_given",    target_guid)
+                record_obj_stat(target_guid, "shoves_received", shover_guid)
+
+                if _collect_gamelog and gamelog_ref then
+                    gamelog_ref.shove(shover_guid, target_guid)
+                end
+            end
+        end
+    end
+
     if not _map_config then return end
     if not _collect_objstats then return end
-
-    local current_time = et.trap_Milliseconds()
 
     -- Objective_Destroyed: <id> <text>
     if string.find(text, "Objective_Destroyed:", 1, true) then
@@ -716,24 +822,6 @@ function objectives.handle_print(text)
         end
     end
 
-    -- Shove: <shover_id> <target_id>
-    if _collect_shovestats and string.find(text, "Shove:", 1, true) then
-        local shover_str, target_str = text:match("^Shove: (%d+) (%d+)")
-        if shover_str then
-            local shover_entry = players_ref.guids[tonumber(shover_str)]
-            local target_entry = players_ref.guids[tonumber(target_str)]
-            if shover_entry and target_entry then
-                local shover_guid = shover_entry.guid
-                local target_guid = target_entry.guid
-                record_obj_stat(shover_guid, "shoves_given",    target_guid)
-                record_obj_stat(target_guid, "shoves_received", shover_guid)
-
-                if _collect_gamelog and gamelog_ref then
-                    gamelog_ref.shove(shover_guid, target_guid)
-                end
-            end
-        end
-    end
 end
 
 
@@ -770,11 +858,18 @@ function objectives.get_stats()
 end
 
 
+function objectives.flush_pending_gamelog()
+    flush_pending_pickup()
+end
+
+
 function objectives.reset()
+    flush_pending_pickup()
     objectives.objstats  = {}
     objective_carriers   = { players = {}, ids = {} }
     objective_states     = {}
     recent_announcements = {}
+    pending_pickup       = nil
     _map_config          = nil
     _common_buildables   = nil
 end

@@ -160,6 +160,19 @@ function gamelog.obj_flag_captured(guid, flag_name)
     })
 end
 
+-- Pickup from console log
+function gamelog.pickup(player_snap, item, owner_snap)
+    gamelog.record("pickup", "player", {
+        player       = player_snap and player_snap.guid,
+        item         = item,
+        owner        = owner_snap and owner_snap.guid or nil,
+        pos          = utils.fmt_pos(player_snap and player_snap.pos),
+        stance       = stance_of(player_snap),
+        owner_pos    = utils.fmt_pos(owner_snap and owner_snap.pos),
+        owner_stance = stance_of(owner_snap),
+    })
+end
+
 -- Player spawn (not a revive)
 -- weapons: array of notable weapon name strings present at spawn, or nil
 function gamelog.spawn(guid, team, class, weapons)
