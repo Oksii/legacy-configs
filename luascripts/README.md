@@ -266,6 +266,20 @@ Ordered array of all events that occurred during the round. Every entry has:
 | `player` | GUID |
 | `flag` | Flag name (`allies_flag`, `axis_flag`, or config key) |
 
+**`pickup`** — console-log pickup/use event
+
+`Item:` is the canonical pickup/use signal. When `Ammo_Pack:` or `Health_Pack:` appears on the same log frame, it attributes that same pickup to another player's pack instead of creating a second event.
+
+| Field | Description |
+|-------|-------------|
+| `player` | GUID |
+| `item` | Raw item token from the log, e.g. `item_health`, `weapon_magicammo`, `weapon_mp40`, `weapon_thompson` |
+| `owner` | GUID of the player whose health/ammo pack was used (optional; absent for self-use and generic weapon pickups) |
+| `pos` | `"x y z"` player origin at the time the line was processed |
+| `stance` | Stance snapshot for the acting player |
+| `owner_pos` | `"x y z"` owner origin at the time the line was processed (optional) |
+| `owner_stance` | Owner stance snapshot (optional) |
+
 **`shove`**
 
 | Field | Description |
@@ -291,7 +305,7 @@ Ordered array of all events that occurred during the round. Every entry has:
 | `round_start` | Emitted when gamestate transitions to GS_PLAYING |
 | `round_end` | Emitted when gamestate transitions to GS_INTERMISSION |
 
-**Stance snapshot** (embedded in kill / teamkill / damage / weapon_fire events):
+**Stance snapshot** (embedded in kill / teamkill / damage / pickup / weapon_fire events):
 
 ```json
 {
@@ -561,6 +575,18 @@ interface FlagCapturedEvent extends GamelogEventBase {
   flag:   string;
 }
 
+interface PickupEvent extends GamelogEventBase {
+  group:  "player";
+  label:  "pickup";
+  player: Guid;
+  item:   string;
+  owner?: Guid;
+  pos:    Position | null;
+  stance: StanceSnapshot | null;
+  owner_pos:     Position | null;
+  owner_stance:  StanceSnapshot | null;
+}
+
 interface ShoveEvent extends GamelogEventBase {
   group:  "player";
   label:  "shove";
@@ -585,7 +611,7 @@ interface RoundEndEvent   extends GamelogEventBase { group: "server"; label: "ro
 type GamelogEvent =
   | SpawnEvent | KillEvent | SuicideEvent | TeamkillEvent | DamageEvent
   | ReviveEvent | ClassChangeEvent | MessageEvent
-  | ObjectiveEvent | FlagCapturedEvent | ShoveEvent
+  | ObjectiveEvent | FlagCapturedEvent | PickupEvent | ShoveEvent
   | WeaponFireEvent
   | RoundStartEvent | RoundEndEvent;
 

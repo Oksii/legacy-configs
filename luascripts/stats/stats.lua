@@ -280,6 +280,9 @@ function stats.save(round_start_time, round_end_time, round_start_unix, round_en
 
     local gamelog_data = nil
     if _collect_gamelog and gamelog_ref then
+        if objectives_ref and objectives_ref.flush_pending_gamelog then
+            objectives_ref.flush_pending_gamelog()
+        end
         gamelog_data = gamelog_ref.get(match_id, round)
     end
 
