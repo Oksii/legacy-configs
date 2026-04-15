@@ -224,9 +224,25 @@ Ordered array of all events that occurred during the round. Every entry has:
 | `damage` | Damage amount |
 | `damage_flags` | Damage flags bitmask |
 | `weapon` | meansOfDeath |
-| `hit_region` | `HR_HEAD`, `HR_ARMS`, `HR_BODY`, `HR_LEGS`, `HR_NONE` |
+| `hit_region` | `HR_HEAD`, `HR_ARMS`, `HR_BODY`, `HR_LEGS`, `HR_NONE` — see note below |
 | `killer_health` / `killer_class` / `killer_pos` / `killer_stance` | Attacker context |
 | `victim_health` / `victim_class` / `victim_pos` / `victim_stance` | Victim context |
+
+> **`HR_NONE` note** — `HR_NONE` does not indicate a miss; it means the engine hit-region delta could not be
+> determined for this damage event. Based on match data (~27% of all damage events are `HR_NONE`), the
+> causes break down as follows:
+>
+> | Cause | ~% | Explanation |
+> |---|---|---|
+> | Dead body hit | 66% | Target was already dead; engine skips `G_LogRegionHit` for dead targets so the attacker's `hitRegions` counter never increments |
+> | Splash / explosive | 31% | Radius damage has no body-part detection (`DAMAGE_RADIUS` flag set); `G_LogRegionHit` is never called |
+> | Cache init | 1.5% | First damage event from an attacker each round; the Lua-side delta cache is seeded on the first call and always returns `HR_NONE` |
+> | No victim | 1.3% | Damage to a non-tracked entity (spectator slot, world object, etc.) |
+>
+> `hit_region` is derived by delta-comparing the attacker's `pers.playerStats.hitRegions[0..3]` counters
+> (HEAD/ARMS/BODY/LEGS) between consecutive `et_Damage` callbacks.  The engine only increments these
+> counters for direct hits on living players, which is why the above scenarios all produce `HR_NONE`.
+> `HR_NONE` is a Lua-level sentinel (`-1`) — it does not exist in the engine's `hitRegion_t` enum.
 
 **`revive`** — medic revived a downed player
 
