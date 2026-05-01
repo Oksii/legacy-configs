@@ -311,7 +311,7 @@ function stats.save(round_start_time, round_end_time, round_start_unix, round_en
             "curl -X POST -H \"Authorization: Bearer %s\" %s",
             _api_token, _url_submit)
 
-        local ok, msg = http_ref.async(curl_cmd, json_str)
+        local ok, msg = http_ref.async(curl_cmd, json_str, true)
         if log then
             log.write(ok and "Stats submission started" or ("Stats submission failed: " .. (msg or "?")))
         end
