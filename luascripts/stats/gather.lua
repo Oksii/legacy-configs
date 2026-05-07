@@ -41,7 +41,7 @@ local _eff_config               = false  -- _auto_config  AND route data present
 local _eff_scores               = false  -- _auto_scores  AND match_data.auto_scores
 local _maxClients               = 24
 local _log_level                = "info"
-local _start_wait_initial       = 420   -- map 1 round 1
+local _start_wait_initial       = 428   -- map 1 round 1
 local _start_wait               = 180   -- all other rounds
 local _server_config_applied    = false
 local _auto_config_map          = {}    -- player-count → config name
@@ -308,7 +308,15 @@ local function recompute_match_timing()
     local round_raw   = et.trap_Cvar_Get("g_currentRound") or "0"
     local round       = tonumber(round_raw:match("%d+")) or 0
 
-    local map_index = 0
+    if #maps == 0 then
+        if log then
+            log.write("auto_start: timing decision — map data missing/empty; scheduled_start not set")
+        end
+        _timing_computed = true
+        return
+    end
+
+    local map_index = -1
     for i, m in ipairs(maps) do
         if current_map:find(m:lower(), 1, true) then
             map_index = i - 1
@@ -316,7 +324,36 @@ local function recompute_match_timing()
         end
     end
 
-    local swapped = (map_index + round) % 2 == 1
+    local idx_for_side = (map_index >= 0) and map_index or 0
+    if log then
+        log.write(string.format(
+            "auto_start: timing context — map=%q idx=%d/%d round=%d matched=%s",
+            current_map, map_index, #maps, round + 1, tostring(map_index >= 0)))
+    end
+
+    if map_index < 0 and log then
+        log.write("auto_start: timing decision — current map not found in route map list; using fallback wait")
+    end
+
+    -- Suppress on terminal context: last configured map and R2 already completed.
+    if _match_extra.auto_start and scores_ref and map_index == (#maps - 1) then
+        local last = scores_ref.get_last_round and scores_ref.get_last_round() or nil
+        if last and last.round_num == 2 then
+            local last_map = (last.mapname or ""):lower()
+            if last_map ~= "" and current_map:find(last_map, 1, true) then
+                _match_extra.scheduled_start = nil
+                if log then
+                    log.write(string.format(
+                        "auto_start: timing decision — terminal context (last map idx=%d, round 2 completed); scheduled_start suppressed",
+                        map_index))
+                end
+                _timing_computed = true
+                return
+            end
+        end
+    end
+
+    local swapped = (idx_for_side + round) % 2 == 1
     _match_extra.sides_swapped = swapped
 
     -- scheduled_start: longer window only for the very first start
@@ -325,14 +362,23 @@ local function recompute_match_timing()
         local wait = is_first_start and _start_wait_initial or _start_wait
         _match_extra.scheduled_start = os.time() + wait
         if log then
+            if is_first_start then
+                log.write(string.format(
+                    "auto_start: timing decision — first map/round; using _start_wait_initial=%ds",
+                    _start_wait_initial))
+            else
+                log.write(string.format(
+                    "auto_start: timing decision — fallback; using _start_wait=%ds",
+                    _start_wait))
+            end
             log.write(string.format(
                 "auto_start: map=%q (idx=%d) round=%d → sides_swapped=%s scheduled_start=now+%ds",
-                current_map, map_index, round + 1, tostring(swapped), wait))
+                current_map, idx_for_side, round + 1, tostring(swapped), wait))
         end
     elseif log then
         log.write(string.format(
             "auto_sort: map=%q (idx=%d) round=%d → sides_swapped=%s",
-            current_map, map_index, round + 1, tostring(swapped)))
+            current_map, idx_for_side, round + 1, tostring(swapped)))
     end
 
     _timing_computed = true
@@ -360,7 +406,23 @@ end
 function gather.on_team_data_fetched(match_id, match_data)
     if not match_data then return end
 
-    if match_id and match_id ~= "" then _route_match_id = match_id end
+    local prev_route_match_id = _route_match_id
+    local prev_scheduled_start = (_match_extra and _match_extra.scheduled_start) or nil
+    local has_new_match_id = (match_id and match_id ~= "")
+    local match_changed = has_new_match_id and (prev_route_match_id ~= nil) and (tostring(prev_route_match_id) ~= tostring(match_id))
+
+    if has_new_match_id then _route_match_id = match_id end
+
+    if match_changed then
+        -- New match boundary: do not inherit in-cycle timing from the prior match.
+        _timing_computed = false
+        prev_scheduled_start = nil
+        if log then
+            log.write(string.format(
+                "auto_start: match changed (%s → %s) — resetting timing context",
+                tostring(prev_route_match_id), tostring(match_id)))
+        end
+    end
     local had_names = _team_names_cache.alpha_teamname ~= nil
     if match_data.alpha_teamname and match_data.beta_teamname then
         _team_names_cache.alpha_teamname = match_data.alpha_teamname
@@ -377,13 +439,24 @@ function gather.on_team_data_fetched(match_id, match_data)
         auto_start      = match_data.auto_start      or false,
         auto_map        = match_data.auto_map        or false,
         auto_scores     = match_data.auto_scores     or false,
-        scheduled_start = match_data.scheduled_start or nil,
+        scheduled_start = nil,
         sides_swapped   = match_data.sides_swapped   or false,
         maps            = match_data.maps            or {},
         channel_id      = match_data.channel_id      or nil,
         server_config   = match_data.server_config   or nil,
         is_gather       = match_data.is_gather       or false,
     }
+
+    -- Lua owns auto-start timer. Keep scheduled_start stable across API refreshes
+    -- within the same warmup cycle.
+    if prev_scheduled_start ~= nil then
+        _match_extra.scheduled_start = prev_scheduled_start
+        if log then
+            log.write("auto_start: scheduled_start preserved; API refresh ignored")
+        end
+    elseif match_data.scheduled_start ~= nil and log then
+        log.write("auto_start: API provided scheduled_start ignored; timer is Lua-owned")
+    end
 
     -- Static master enable AND match_data must both be true.
     -- _eff_config requires roster players (alpha+beta > 0) to distinguish gather matches
@@ -1065,14 +1138,14 @@ function gather.tick(frame_time, current_gs)
             _state = STATE_WARNING_60
             local conn, miss, unk = scan_players(match_data)
 
-            -- Failsafe: ≤30% of team present at T-60 → assume different server, abort silently
+            -- Failsafe: ≤20% of team present at T-60 → assume different server, abort silently
             local roster_count  = total_roster_count(match_data)
             local present_count = #conn + #unk
-            if roster_count > 0 and present_count <= math.floor(roster_count * 0.3) then
+            if roster_count > 0 and present_count <= math.floor(roster_count * 0.2) then
                 _state = STATE_DONE
                 if log then
                     log.write(string.format(
-                        "auto_start: T-60 abort — only %d/%d players present (≤30%%), assuming wrong server",
+                        "auto_start: T-60 abort — only %d/%d players present (≤20%%), assuming wrong server",
                         present_count, roster_count))
                 end
                 return
