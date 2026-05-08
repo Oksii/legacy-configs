@@ -63,7 +63,7 @@ local SAVE_STATS_DELAY          = 3000   -- ms after intermission before SaveSta
 
 -- [MODULE]
 local MODNAME                   = "stats"
-local VERSION                   = "2.2.4"
+local VERSION                   = "2.2.5"
 
 -- [ENV OVERRIDES]
 -- Any setting above can be overridden by an environment variable of the same
