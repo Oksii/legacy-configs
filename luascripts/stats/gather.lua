@@ -41,7 +41,7 @@ local _eff_config               = false  -- _auto_config  AND route data present
 local _eff_scores               = false  -- _auto_scores  AND match_data.auto_scores
 local _maxClients               = 24
 local _log_level                = "info"
-local _start_wait_initial       = 428   -- map 1 round 1
+local _start_wait_initial       = 420   -- map 1 round 1
 local _start_wait               = 180   -- all other rounds
 local _server_config_applied    = false
 local _auto_config_map          = {}    -- player-count → config name
@@ -255,6 +255,7 @@ function gather.load_team_data_from_file(cached_match_id_ref)
         _team_data_fetched = true
         if result.match_extra then
             _match_extra = result.match_extra
+            _match_extra.scheduled_start = nil  -- never valid from disk; always recomputed by recompute_match_timing()
             -- Re-derive effective flags; gather.init() reset them all to false.
             local is_gather = _match_extra.is_gather or false
             _eff_rename  = _auto_rename  and is_gather and (_match_extra.auto_rename  or false)
