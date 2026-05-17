@@ -112,6 +112,78 @@ function http.sync(curl_cmd, payload)
     return result  -- return raw string if JSON parse fails
 end
 
+-- Callback-based async request: writes response body to a tempfile, atomically
+-- signals completion via a .done marker, then poll_pending() dispatches to cb.
+-- Use for any request that previously used http.sync() from a frame-path call site.
+local _pending = {}
+local _async_counter = 0
+
+local ASYNC_REQ_FLAGS =
+    " --silent --connect-timeout 2 --max-time 5" ..
+    " --retry 2 --retry-delay 1 --retry-max-time 8"
+
+local PENDING_TIMEOUT_MS = 30000
+
+local function next_id()
+    _async_counter = _async_counter + 1
+    local ms = (et and et.trap_Milliseconds and et.trap_Milliseconds()) or (os.time() * 1000)
+    return string.format("%d_%d", ms, _async_counter)
+end
+
+function http.async_request(curl_cmd, callback)
+    if not curl_cmd:find("--connect-timeout") then
+        curl_cmd = curl_cmd .. ASYNC_REQ_FLAGS
+    end
+    local id   = next_id()
+    local resp = "/tmp/stats_async_" .. id .. ".resp"
+    local done = "/tmp/stats_async_" .. id .. ".done"
+    -- Write body to resp, then touch done. Stderr discarded. Backgrounded.
+    local shell = string.format(
+        "(%s -o %s 2>/dev/null ; touch %s) &",
+        curl_cmd, http.shell_escape(resp), http.shell_escape(done))
+    os.execute(shell)
+    _pending[id] = {
+        cb      = callback,
+        resp    = resp,
+        done    = done,
+        started = (et and et.trap_Milliseconds and et.trap_Milliseconds()) or 0,
+    }
+    return id
+end
+
+local function dispatch(id, r, body, err)
+    _pending[id] = nil
+    if not r.cb then return end
+    local decoded
+    if body and body ~= "" then
+        if not json then json = require("dkjson") end
+        local ok, d = pcall(json.decode, body)
+        if ok then decoded = d end
+    end
+    pcall(r.cb, decoded, body, err)
+end
+
+function http.poll_pending(now)
+    if not next(_pending) then return end
+    now = now or ((et and et.trap_Milliseconds and et.trap_Milliseconds()) or 0)
+    for id, r in pairs(_pending) do
+        local df = io.open(r.done, "r")
+        if df then
+            df:close()
+            local body
+            local rf = io.open(r.resp, "r")
+            if rf then body = rf:read("*a"); rf:close() end
+            os.remove(r.resp)
+            os.remove(r.done)
+            dispatch(id, r, body, nil)
+        elseif (now - r.started) > PENDING_TIMEOUT_MS then
+            os.remove(r.resp)
+            os.remove(r.done)
+            dispatch(id, r, nil, "timeout")
+        end
+    end
+end
+
 -- Best-effort public IP lookup (used when net_ip is 0.0.0.0).
 function http.getPublicIP()
     local result = http.sync(

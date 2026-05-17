@@ -41,8 +41,12 @@ local _eff_config               = false  -- _auto_config  AND route data present
 local _eff_scores               = false  -- _auto_scores  AND match_data.auto_scores
 local _maxClients               = 24
 local _log_level                = "info"
-local _start_wait_initial       = 420   -- map 1 round 1
-local _start_wait               = 180   -- all other rounds
+local _start_wait_initial       = 300   -- map 1 round 1 (simple mode)
+local _start_wait               = 120   -- all other rounds
+local _start_mode               = "simple"  -- "simple" | "phased"
+local _connect_wait             = 180   -- phased: connect phase duration
+local _ready_wait               = 120   -- phased: ready phase duration
+local _phase                    = "ready"  -- "connect" | "ready" (always "ready" in simple mode)
 local _server_config_applied    = false
 local _auto_config_map          = {}    -- player-count → config name
 local _timing_computed          = false -- reset between rounds
@@ -81,6 +85,7 @@ local STATE_LATE_JOIN_COUNTDOWN = "late_join_countdown"
 local _state                    = STATE_IDLE
 local _countdown_val            = nil
 local _countdown_last           = 0
+local _route_validation         = nil   -- nil = not yet fired, "pending" | "valid" | "invalid" | "unknown"
 
 local NOTIFY_INIT_SUPPRESS_MS   = 3000  -- suppress notify calls for 3s after init/reset
 local _init_frame_time          = 0     -- set at gather.init() and gather.reset()
@@ -118,8 +123,12 @@ function gather.init(cfg, log_ref, http_module, api_module, scores_module)
     _auto_config_map    = cfg.auto_config_map or {}
     _maxClients         = cfg.maxClients      or 24
     _log_level          = cfg.api_log_level or cfg.log_level or "info"
-    _start_wait_initial = cfg.start_wait_initial or 420
-    _start_wait         = cfg.start_wait         or 180
+    _start_wait_initial = cfg.start_wait_initial or 300
+    _start_wait         = cfg.start_wait         or 120
+    _start_mode         = (cfg.start_mode == "phased") and "phased" or "simple"
+    _connect_wait       = cfg.connect_wait       or 180
+    _ready_wait         = cfg.ready_wait         or 120
+    _phase              = "ready"
     _initial_round      = cfg.initial_round      or 0
 
     _match_extra         = {}
@@ -150,6 +159,8 @@ function gather.reset()
     _countdown_val    = nil
     _countdown_last   = 0
     _timing_computed  = false  -- recompute scheduled_start/sides_swapped for the new round
+    _route_validation = nil
+    _phase            = "ready"
     _init_frame_time  = et.trap_Milliseconds()
 end
 
@@ -164,6 +175,7 @@ function gather.reset_team_data()
     _player_ready_status  = {}
     _last_name_check_time = 0
     _route_match_id       = nil
+    _route_validation     = nil
     _match_extra           = {}
     _match_data_stale      = true
     _eff_rename            = false
@@ -357,13 +369,25 @@ local function recompute_match_timing()
     local swapped = (idx_for_side + round) % 2 == 1
     _match_extra.sides_swapped = swapped
 
-    -- scheduled_start: longer window only for the very first start
+    -- scheduled_start: phased mode splits the first start into connect+ready phases;
+    -- simple mode uses _start_wait_initial for the very first start and _start_wait after.
     if _match_extra.auto_start then
         local is_first_start = (map_index == 0 and round == 0)
-        local wait = is_first_start and _start_wait_initial or _start_wait
+        local wait
+        if _start_mode == "phased" and is_first_start then
+            _phase = "connect"
+            wait   = _connect_wait
+        else
+            _phase = "ready"
+            wait   = is_first_start and _start_wait_initial or _start_wait
+        end
         _match_extra.scheduled_start = os.time() + wait
         if log then
-            if is_first_start then
+            if _phase == "connect" then
+                log.write(string.format(
+                    "auto_start: timing decision — phased mode, connect phase; _connect_wait=%ds (ready_wait=%ds queued)",
+                    _connect_wait, _ready_wait))
+            elseif is_first_start then
                 log.write(string.format(
                     "auto_start: timing decision — first map/round; using _start_wait_initial=%ds",
                     _start_wait_initial))
@@ -373,8 +397,8 @@ local function recompute_match_timing()
                     _start_wait))
             end
             log.write(string.format(
-                "auto_start: map=%q (idx=%d) round=%d → sides_swapped=%s scheduled_start=now+%ds",
-                current_map, idx_for_side, round + 1, tostring(swapped), wait))
+                "auto_start: map=%q (idx=%d) round=%d phase=%s → sides_swapped=%s scheduled_start=now+%ds",
+                current_map, idx_for_side, round + 1, _phase, tostring(swapped), wait))
         end
     elseif log then
         log.write(string.format(
@@ -1000,6 +1024,7 @@ notify_api = function(seconds_until_start, connected, missing, unknown, match_id
         missing_players     = missing,
         unknown_players     = unknown,
         trigger             = trigger or "timer",
+        phase               = _phase or "ready",
     }
 
     local json_str = json.encode(payload)
@@ -1119,20 +1144,56 @@ function gather.tick(frame_time, current_gs)
 
     if _state == STATE_IDLE then
         _state = STATE_ARMED
+        -- Fire async route validation; result lands well before T-60.
+        if api_ref and api_ref.validate_route_async and match_id ~= "" then
+            _route_validation = "pending"
+            api_ref.validate_route_async(match_id, function(ok)
+                if ok == true then
+                    _route_validation = "valid"
+                elseif ok == false then
+                    _route_validation = "invalid"
+                else
+                    _route_validation = "unknown"
+                end
+                if log then
+                    log.write(string.format(
+                        "auto_start: route validation = %s", tostring(_route_validation)))
+                end
+            end)
+        else
+            _route_validation = "valid"
+        end
         return
     end
 
     if _state == STATE_ARMED then
         if now >= scheduled - 60 then
-            -- Re-validate route before firing any warnings: the match may have finished
-            -- and the route deregistered after Lua cached the match data at init.
-            if api_ref and not api_ref.validate_route(match_id) then
+            -- Fail-safe gating: T-60 only fires when cache present AND route confirmed valid.
+            -- Any other state → suppress to STATE_DONE (per "suppress when API down" policy).
+            if not match_data then
+                if log then
+                    log.write("auto_start: T-60 suppressed — no team data cached (API unreachable?)")
+                end
+                _state = STATE_DONE
+                return
+            end
+            if _route_validation == "invalid" then
                 if log then
                     log.write(string.format(
                         "auto_start: T-60 abort — route no longer valid for match %s",
                         tostring(match_id)))
                 end
                 gather.reset_team_data()
+                _state = STATE_DONE
+                return
+            end
+            if _route_validation ~= "valid" then
+                if log then
+                    log.write(string.format(
+                        "auto_start: T-60 suppressed — route validation %s (API unreachable?)",
+                        tostring(_route_validation or "not started")))
+                end
+                _state = STATE_DONE
                 return
             end
 
@@ -1152,8 +1213,13 @@ function gather.tick(frame_time, current_gs)
                 return
             end
 
-            say("^7Game starts in ^160^7 seconds!")
-            cp("^7Game starts in ^160^7 seconds!")
+            if _phase == "connect" then
+                say("^7Connect phase ends in ^160^7 seconds — join now to avoid a ban!")
+                cp("^7Connect phase ends in ^160^7 seconds!")
+            else
+                say("^7Game starts in ^160^7 seconds!")
+                cp("^7Game starts in ^160^7 seconds!")
+            end
             notify_api(60, conn, miss, unk, match_id)
             if log then
                 local miss_names = {}
@@ -1168,8 +1234,13 @@ function gather.tick(frame_time, current_gs)
     if _state == STATE_WARNING_60 then
         if now >= scheduled - 10 then
             _state = STATE_WARNING_10
-            say("^7Game starts in ^110^7 seconds!")
-            cp("^7Game starts in ^110^7 seconds!")
+            if _phase == "connect" then
+                say("^7Connect phase ends in ^110^7 seconds!")
+                cp("^7Connect phase ends in ^110^7 seconds!")
+            else
+                say("^7Game starts in ^110^7 seconds!")
+                cp("^7Game starts in ^110^7 seconds!")
+            end
             local conn, miss, unk = scan_players(match_data)
             notify_api(10, conn, miss, unk, match_id)
             if log then
@@ -1206,9 +1277,41 @@ function gather.tick(frame_time, current_gs)
     end
 
     if _state == STATE_START_ATTEMPT then
-        _state = STATE_DONE
-
         local conn, miss, unk = scan_players(match_data)
+
+        if _phase == "connect" then
+            notify_api(0, conn, miss, unk, match_id)
+            if log then
+                local miss_names = {}
+                for _, p in ipairs(miss) do table.insert(miss_names, p.nick or p.expected_name or "?") end
+                local suffix = #miss > 0 and (" — " .. table.concat(miss_names, ", ")) or ""
+                log.write(string.format(
+                    "auto_start: connect-phase T-0 — %d connected, %d missing%s; ban dispatch sent",
+                    #conn, #miss, suffix))
+            end
+            if #miss > 0 then
+                say(string.format("^1Connect phase complete — %d player%s missing, bans issued",
+                    #miss, #miss == 1 and "" or "s"))
+            else
+                say("^2All players connected!")
+            end
+
+            -- Transition into ready phase: re-arm state machine with a fresh scheduled_start.
+            _phase                       = "ready"
+            _match_extra.scheduled_start = os.time() + _ready_wait
+            _state                       = STATE_ARMED
+            _countdown_val               = nil
+            _countdown_last              = 0
+            say(string.format("^7Ready phase begins — game starts in ^3%d^7 seconds. Ready up!", _ready_wait))
+            cp("^7Ready up!")
+            if log then
+                log.write(string.format(
+                    "auto_start: entering ready phase — scheduled_start=now+%ds", _ready_wait))
+            end
+            return
+        end
+
+        _state = STATE_DONE
         if check_start_conditions(match_data, conn, miss) then
             if log then log.write("auto_start: conditions met — calling ref allready") end
             et.trap_SendConsoleCommand(et.EXEC_APPEND, "ref allready\n")

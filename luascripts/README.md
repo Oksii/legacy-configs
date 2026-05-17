@@ -707,8 +707,8 @@ The match-ID endpoint is called as `GET {API_URL_MATCHID}/{server_ip}/{server_po
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LOG_FILEPATH` | `"/legacy/homepath/…/game_stats.log"` | Absolute path for the log file. Shared convention with `tracker.lua` and `combinedfixes.lua` — all three can point at the same file. |
-| `JSON_FILEPATH` | `"/legacy/homepath/…/stats/"` | Directory where local JSON dumps are written when `DUMP_STATS_DATA = true` |
+| `JSON_FILEPATH` | `""` (auto-detect) | Shared output directory for both `game_stats.log` and JSON dumps (when `DUMP_STATS_DATA = true`). Empty auto-resolves to `<fs_homepath>/legacy/`. Override via `STATS_API_PATH`. |
+| `LOG_FILEPATH` | derived | Always `JSON_FILEPATH .. "game_stats.log"` — not configurable separately. Set `STATS_API_PATH` to relocate both outputs. |
 
 ### [COLLECTION]
 
@@ -763,8 +763,23 @@ Player count is taken from the registered gather roster (`alpha_team` + `beta_te
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AUTO_START_WAIT_INITIAL` | `420` | Seconds before force-start on the first round of a match (map 1, round 1). |
+| `AUTO_START_WAIT_INITIAL` | `420` | Seconds before force-start on the first round of a match (map 1, round 1). **Simple mode only.** |
 | `AUTO_START_WAIT` | `180` | Seconds before force-start on all subsequent rounds. |
+
+### [AUTO-START PHASED MODE]
+
+Splits the very first start of a match into two phases. Subsequent rounds still use the single
+`AUTO_START_WAIT` timer.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AUTO_START_MODE` | `"simple"` | `"simple"` uses `AUTO_START_WAIT_INITIAL` for map 1 round 1. `"phased"` runs a connect phase followed by a ready phase. |
+| `AUTO_START_CONNECT_WAIT` | `180` | Seconds for the connect phase. T-60 / T-10 / T-0 warnings fire over chat and to the API. At T-0, any rostered player whose GUID never connected to the server is banned, then the ready phase begins. |
+| `AUTO_START_READY_WAIT` | `120` | Seconds for the ready phase that follows the connect phase. Behaves like the normal auto-start window: T-60 / T-10 / T-0 warnings, then `ref allready` if balanced + all present; otherwise late-joiners trigger a 10-second force-start countdown. |
+
+Bans/warnings dispatch through the existing `/matches/auto-start/notify` endpoint with a new
+`phase` field (`"connect"` | `"ready"`). Players missing from voice **or** the server at T-0 of
+either phase are punished (subject to channel-level `auto_ban` setting).
 
 ### [TIMING]
 
@@ -784,7 +799,7 @@ silently ignored and the defaults above apply.
 | `STATS_API_URL_SUBMIT` | `API_URL_SUBMIT` |
 | `STATS_API_URL_MATCHID` | `API_URL_MATCHID` |
 | `STATS_API_URL_VERSION` | `API_URL_VERSION` |
-| `STATS_API_PATH` | `JSON_FILEPATH` |
+| `STATS_API_PATH` | `JSON_FILEPATH` — shared output dir for both the log file (`game_stats.log`) and JSON dumps |
 | `STATS_API_LOG_LEVEL` | `LOG_LEVEL` |
 | `STATS_API_LOG` | `LOGGING_ENABLED` (`"true"` / `"false"`) |
 | `STATS_API_GAMELOG` | `COLLECT_GAMELOG` |
@@ -804,6 +819,9 @@ silently ignored and the defaults above apply.
 | `STATS_AUTO_SCORES` | `AUTO_SCORES` |
 | `STATS_AUTO_START_WAIT_INITIAL` | `AUTO_START_WAIT_INITIAL` |
 | `STATS_AUTO_START_WAIT` | `AUTO_START_WAIT` |
+| `STATS_AUTO_START_MODE` | `AUTO_START_MODE` — `"simple"` (default) or `"phased"` |
+| `STATS_AUTO_START_CONNECT_WAIT` | `AUTO_START_CONNECT_WAIT` — connect-phase duration (phased mode) |
+| `STATS_AUTO_START_READY_WAIT` | `AUTO_START_READY_WAIT` — ready-phase duration (phased mode) |
 | `STATS_AUTO_CONFIG_2` | `AUTO_CONFIG_MAP[2]` — server config name for ≤2-player matches |
 | `STATS_AUTO_CONFIG_4` | `AUTO_CONFIG_MAP[4]` — server config name for ≤4-player matches |
 | `STATS_AUTO_CONFIG_6` | `AUTO_CONFIG_MAP[6]` — server config name for ≤6-player matches |
@@ -875,10 +893,36 @@ team 1 (Axis) or team 2 (Allies). Respects `sides_swapped` from match data.
 
 ### AUTO_START
 
-Runs a countdown to `scheduled_start` (Unix timestamp from match data) and calls
-`ref allready` when all roster players are present. If the match fails to start (missing
-players), a notification is sent to the API. If all players join after the scheduled time
-while still in GS_WARMUP, a 5-second late-join countdown triggers automatically.
+Runs a countdown to `scheduled_start` and calls `ref allready` when all roster players are
+present. If the match fails to start (missing players), a notification is sent to the API.
+If all players join after the scheduled time while still in GS_WARMUP, a late-join countdown
+triggers automatically.
+
+Two modes (set via `AUTO_START_MODE`):
+
+- **`simple`** (default) — one window per round. Map 1 round 1 uses `AUTO_START_WAIT_INITIAL`;
+  every other round uses `AUTO_START_WAIT`.
+- **`phased`** — only the very first start of a match runs as two windows: a **connect phase**
+  (`AUTO_START_CONNECT_WAIT`) that bans rostered players who never connect, followed by a
+  **ready phase** (`AUTO_START_READY_WAIT`) that bans players missing from the server or voice
+  at T-0 and force-starts the match. Subsequent rounds keep the simple short timer.
+
+State machine (`gather.tick`):
+`IDLE → ARMED → WARNING_60 → WARNING_10 → COUNTDOWN → START_ATTEMPT → DONE`
+with a `└→ LATE_JOIN_COUNTDOWN` branch from `DONE` for late joiners during the ready phase.
+In phased mode, `START_ATTEMPT` at connect-T-0 dispatches connect-phase bans and re-arms
+the same state machine with a fresh `scheduled_start = now + AUTO_START_READY_WAIT`.
+
+#### Resilience to API outages
+
+All HTTP from `api.lua` (match-ID fetch, route validation, version check) is non-blocking:
+calls fire in the background and dispatch results through `util/http.poll_pending()` on
+each `et_RunFrame`. If the API host is unreachable, the game loop does not stall.
+
+The auto-start countdown is gated for safety: at T-60 the state machine requires both a
+cached `team_data` payload **and** a positive route-validation result before any warning
+fires. If either is unavailable, the countdown is suppressed (`STATE_DONE` with a log entry)
+rather than running blind — admins can still issue `ref allready` manually.
 
 ### AUTO_SCORES
 
