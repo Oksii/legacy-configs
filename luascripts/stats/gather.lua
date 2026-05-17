@@ -563,15 +563,28 @@ function gather.on_team_data_fetched(match_id, match_data)
 
             local count_ok = connected_in_teams == 0 or connected_in_teams == total
             local resolved = resolve_server_config(total, _match_extra.server_config)
-            if resolved and resolved ~= "" and count_ok then
+            -- Persistent guard via g_customConfig (survives Lua reloads). If the
+            -- server is already running on the resolved config, do NOT re-apply —
+            -- `ref config X` can pulse map state and re-invoke et_InitGame, which
+            -- would reset _server_config_applied and produce an infinite reload loop.
+            local current_cfg = (et.trap_Cvar_Get("g_customConfig") or ""):lower()
+            local target_cfg  = (resolved or ""):lower()
+            local already_on  = (target_cfg ~= "" and current_cfg == target_cfg)
+            if resolved and resolved ~= "" and count_ok and not already_on then
                 _server_config_applied = true
                 if log then
                     log.write(string.format(
-                        "auto_config: %d expected / %d connected → applying '%s'",
-                        total, connected_in_teams, resolved))
+                        "auto_config: %d expected / %d connected → applying '%s' (current=%q)",
+                        total, connected_in_teams, resolved, current_cfg))
                 end
                 et.trap_SendConsoleCommand(et.EXEC_APPEND,
                     string.format("ref config %s\n", resolved))
+            elseif already_on then
+                _server_config_applied = true  -- record we're aligned; suppress further attempts
+                if log then
+                    log.debug(string.format(
+                        "auto_config: skipped — server already on '%s'", resolved))
+                end
             elseif not count_ok and log then
                 log.write(string.format(
                     "auto_config: skipped — %d connected but %d expected",
