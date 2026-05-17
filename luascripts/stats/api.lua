@@ -1,7 +1,8 @@
 --[[
     stats/api.lua
-    API interactions: match-ID fetch, version check.
-    Uses http.sync() for init-time calls only (never in a hot frame path).
+    API interactions: match-ID fetch, route validation, version check.
+    All HTTP is non-blocking; callers register callbacks. Results dispatched
+    from util/http.poll_pending() which runs every et_RunFrame.
 --]]
 
 local api = {}
@@ -18,6 +19,8 @@ local _version          = "unknown"
 
 local _server_ip        = ""
 local _server_port      = ""
+
+local _fetch_in_flight = false
 
 -- Cached match ID from last successful fetch.
 api.cached_match_id = nil
@@ -43,55 +46,74 @@ function api.set_server_info(ip, port)
     _server_port = port
 end
 
-function api.fetch_match_id()
+function api.fetch_match_id(on_complete)
     if not _url_matchid or _url_matchid == "" then
         api.cached_match_id = tostring(os.time())
-        return api.cached_match_id
+        if on_complete then pcall(on_complete, api.cached_match_id) end
+        return
     end
+
+    if _fetch_in_flight then
+        if log then log.debug("API fetch already in flight — skipping duplicate") end
+        return
+    end
+    _fetch_in_flight = true
 
     local url      = string.format("%s/%s/%s", _url_matchid, _server_ip, _server_port)
     local curl_cmd = string.format(
-        "curl -H \"Authorization: Bearer %s\" --connect-timeout 1 --max-time 2 %s",
+        "curl -s -H \"Authorization: Bearer %s\" %s",
         _api_token, url)
 
-    local result = http_ref.sync(curl_cmd)
-
-    if type(result) == "table" and result.match_id and result.match_id ~= "" then
-        api.cached_match_id = result.match_id
-
-        if names_ref and result.match then
-            names_ref.on_team_data_fetched(result.match_id, result.match)
+    http_ref.async_request(curl_cmd, function(result, _body, err)
+        _fetch_in_flight = false
+        local match_id
+        if type(result) == "table" and result.match_id and result.match_id ~= "" then
+            match_id = result.match_id
+            api.cached_match_id = match_id
+            if names_ref and result.match then
+                names_ref.on_team_data_fetched(match_id, result.match)
+            end
+            if log then
+                log.write(string.format("API fetch OK — match_id: %s", match_id))
+            end
+        else
+            match_id = tostring(os.time())
+            api.cached_match_id = match_id
+            if log then
+                log.write(string.format(
+                    "API fetch failed (%s), using unix-time as match_id: %s",
+                    err or "no data", match_id))
+            end
         end
-
-        if log then
-            log.write(string.format("API fetch OK — match_id: %s", result.match_id))
-        end
-        return result.match_id
-    end
-
-    -- Fallback
-    local fallback = tostring(os.time())
-    api.cached_match_id = fallback
-    if log then
-        log.write("API fetch failed, using unix-time as match_id: " .. fallback)
-    end
-    return fallback
+        if on_complete then pcall(on_complete, match_id) end
+    end)
 end
 
--- Checks if the route is still registered for expected_match_id.
--- No side effects: does not update cached_match_id or call gather callbacks.
--- Returns true only if the route responds with the exact same match_id.
-function api.validate_route(expected_match_id)
-    if not expected_match_id or expected_match_id == "" then return false end
-    if not _url_matchid or _url_matchid == "" then return true end
+-- Async route validation. cb(true) = route confirms expected_match_id, cb(false) =
+-- route reports a different match_id or no data, cb(nil) = network/timeout error.
+function api.validate_route_async(expected_match_id, cb)
+    if not expected_match_id or expected_match_id == "" then
+        if cb then pcall(cb, false) end
+        return
+    end
+    if not _url_matchid or _url_matchid == "" then
+        if cb then pcall(cb, true) end
+        return
+    end
 
     local url      = string.format("%s/%s/%s", _url_matchid, _server_ip, _server_port)
     local curl_cmd = string.format(
-        "curl -H \"Authorization: Bearer %s\" --connect-timeout 1 --max-time 2 %s",
+        "curl -s -H \"Authorization: Bearer %s\" %s",
         _api_token, url)
 
-    local result = http_ref.sync(curl_cmd)
-    return type(result) == "table" and result.match_id == expected_match_id
+    http_ref.async_request(curl_cmd, function(result, _body, err)
+        if err then
+            if cb then pcall(cb, nil) end
+            return
+        end
+        local ok = (type(result) == "table" and result.match_id == expected_match_id)
+        if cb then pcall(cb, ok) end
+    end)
 end
 
 
@@ -114,14 +136,16 @@ function api.check_version()
     if not _url_version or _url_version == "" then return end
 
     local curl_cmd = string.format(
-        "curl -H \"Authorization: Bearer %s\" %s",
+        "curl -s -H \"Authorization: Bearer %s\" %s",
         _api_token, _url_version)
 
     if log then log.debug("Checking version against API…") end
 
-    local result = http_ref.sync(curl_cmd)
-
-    if type(result) == "table" and result.version then
+    http_ref.async_request(curl_cmd, function(result, _body, err)
+        if err or type(result) ~= "table" or not result.version then
+            if log then log.write("Version check: no data received") end
+            return
+        end
         local latest = result.version
         if log then
             log.debug(string.format("Version check — current: %s, latest: %s", _version, latest))
@@ -132,13 +156,12 @@ function api.check_version()
             et.trap_SendServerCommand(-1, string.format(
                 "chat \"^7Please update to the latest version (^2%s^7) ASAP.\"", latest))
         end
-    else
-        if log then log.write("Version check: no data received") end
-    end
+    end)
 end
 
 function api.reset()
     api.cached_match_id = nil
+    _fetch_in_flight    = false
 end
 
 return api

@@ -1,6 +1,6 @@
 --[[
     stats.lua  — root module for ETLegacy game stats collection
-    Version: 2.2.5
+    Version: 2.3.0
 
     All user-facing settings live in the CONFIGURATION block below.
     config.toml is kept only for map-specific patterns and common buildables.
@@ -17,8 +17,8 @@ local API_URL_SUBMIT            = "https://api.etl.lol/api/v2/stats/etl/matches/
 local API_URL_VERSION           = "https://api.etl.lol/api/v2/stats/etl/matches/stats/version"
 
 -- [PATHS]
-local LOG_FILEPATH              = "/legacy/homepath/legacy/stats/game_stats.log"
-local JSON_FILEPATH             = "/legacy/homepath/legacy/stats/"
+local JSON_FILEPATH             = ""
+local LOG_FILEPATH
 
 -- [COLLECTION]
 local LOGGING_ENABLED           = false
@@ -54,8 +54,18 @@ local AUTO_CONFIG_MAP = {
 }
 
 -- [AUTO-START TIMING]
-local AUTO_START_WAIT_INITIAL   = 420    -- seconds  (First Round, 7min)
-local AUTO_START_WAIT           = 180    -- seconds  (Consecutive Rounds, 3 min)
+local AUTO_START_WAIT_INITIAL   = 300    -- seconds  (First Round, 7min)
+local AUTO_START_WAIT           = 120    -- seconds  (Consecutive Rounds, 3 min)
+
+-- [AUTO-START PHASED MODE]
+-- "simple"  → single window using AUTO_START_WAIT_INITIAL / AUTO_START_WAIT (default).
+-- "phased"  → only the very first start uses two phases:
+--               connect phase (AUTO_START_CONNECT_WAIT) — bans for not connecting,
+--               ready phase   (AUTO_START_READY_WAIT)   — bans for not readying / force-starts.
+--             Subsequent rounds still use the simple short timer (AUTO_START_WAIT).
+local AUTO_START_MODE           = "simple"
+local AUTO_START_CONNECT_WAIT   = 180    -- seconds, connect phase
+local AUTO_START_READY_WAIT     = 120    -- seconds, ready phase
 
 -- [STATS TIMING]
 local STORE_TIME_INTERVAL       = 5000   -- ms between StoreStats calls
@@ -63,7 +73,7 @@ local SAVE_STATS_DELAY          = 3000   -- ms after intermission before SaveSta
 
 -- [MODULE]
 local MODNAME                   = "stats"
-local VERSION                   = "2.2.5"
+local VERSION                   = "2.3.0"
 
 -- [ENV OVERRIDES]
 -- Any setting above can be overridden by an environment variable of the same
@@ -105,6 +115,9 @@ AUTO_CONFIG_MAP[10]             = os.getenv("STATS_AUTO_CONFIG_10") or AUTO_CONF
 AUTO_CONFIG_MAP[12]             = os.getenv("STATS_AUTO_CONFIG_12") or AUTO_CONFIG_MAP[12]
 AUTO_START_WAIT_INITIAL         = tonumber(os.getenv("STATS_AUTO_START_WAIT_INITIAL")) or AUTO_START_WAIT_INITIAL
 AUTO_START_WAIT                 = tonumber(os.getenv("STATS_AUTO_START_WAIT"))         or AUTO_START_WAIT
+AUTO_START_MODE                 = os.getenv("STATS_AUTO_START_MODE")                   or AUTO_START_MODE
+AUTO_START_CONNECT_WAIT         = tonumber(os.getenv("STATS_AUTO_START_CONNECT_WAIT")) or AUTO_START_CONNECT_WAIT
+AUTO_START_READY_WAIT           = tonumber(os.getenv("STATS_AUTO_START_READY_WAIT"))   or AUTO_START_READY_WAIT
 
 -- STATS_GATHER_FEATURES=true enables all gather features at once.
 -- Individual flags can still be explicitly overridden (e.g. STATS_AUTO_CONFIG=false).
@@ -177,6 +190,9 @@ local function build_cfg()
         auto_config_map         = AUTO_CONFIG_MAP,
         start_wait_initial      = AUTO_START_WAIT_INITIAL,
         start_wait              = AUTO_START_WAIT,
+        start_mode              = AUTO_START_MODE,
+        connect_wait            = AUTO_START_CONNECT_WAIT,
+        ready_wait              = AUTO_START_READY_WAIT,
         initial_round           = tonumber(et.trap_Cvar_Get("g_currentRound")) or 0,
         log_level               = LOG_LEVEL,
         version_check           = VERSION_CHECK,
@@ -276,6 +292,16 @@ end
 function et_InitGame()
     local _init_t0 = os.clock()
     et.RegisterModname(string.format("%s %s", MODNAME, VERSION))
+
+    -- Resolve output dir: empty/unset → <fs_homepath>/legacy/ (matches combinedfixes.lua)
+    if not JSON_FILEPATH or JSON_FILEPATH == "" then
+        local homepath = et.trap_Cvar_Get("fs_homepath") or ""
+        JSON_FILEPATH = homepath .. "/legacy/"
+    end
+    if JSON_FILEPATH:sub(-1) ~= "/" then JSON_FILEPATH = JSON_FILEPATH .. "/" end
+    LOG_FILEPATH = JSON_FILEPATH .. "stats.log"
+    os.execute("mkdir -p " .. JSON_FILEPATH)
+
     log_mod.init(LOG_FILEPATH, LOGGING_ENABLED, LOG_LEVEL)
     log_mod.buffer_start()
     server_ip, server_port = resolve_server_ip()
@@ -375,12 +401,13 @@ function et_InitGame()
         end
     elseif (current_gs == et.GS_WARMUP or current_gs == et.GS_WARMUP_COUNTDOWN)
         and (AUTO_RENAME or AUTO_SORT or AUTO_START or AUTO_MAP or AUTO_CONFIG) then
-        log_mod.write(string.format("Warmup (gs=%d) — fetching match data", current_gs))
-        local mid = api.fetch_match_id()
-        if mid then
-            log_mod.write("Match data fetched: " .. mid)
-            gather.save_team_data_to_file(mid)
-        end
+        log_mod.write(string.format("Warmup (gs=%d) — fetching match data (async)", current_gs))
+        api.fetch_match_id(function(mid)
+            if mid then
+                log_mod.write("Match data fetched: " .. mid)
+                gather.save_team_data_to_file(mid)
+            end
+        end)
     end
 
     -- Populate GUID cache
@@ -408,6 +435,8 @@ end
 
 function et_RunFrame(frame_level_time)
     level_time = frame_level_time
+
+    http.poll_pending(frame_level_time)
 
     if _deferred_init_pending then
         _deferred_init_pending = false
