@@ -180,10 +180,13 @@ function http.poll_pending(_unused)
             os.remove(r.resp)
             os.remove(r.done)
             dispatch(id, r, body, nil)
-        elseif (now - r.started) > PENDING_TIMEOUT_MS then
-            os.remove(r.resp)
-            os.remove(r.done)
-            dispatch(id, r, nil, "timeout")
+        else
+            local elapsed = now - r.started
+            if r.started > 0 and elapsed > PENDING_TIMEOUT_MS then
+                os.remove(r.resp)
+                os.remove(r.done)
+                dispatch(id, r, nil, "timeout")
+            end
         end
     end
 end
