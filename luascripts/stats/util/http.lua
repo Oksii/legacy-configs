@@ -163,9 +163,13 @@ local function dispatch(id, r, body, err)
     pcall(r.cb, decoded, body, err)
 end
 
-function http.poll_pending(now)
+-- Polls for completed async requests. The optional argument is ignored; we
+-- always read et.trap_Milliseconds() so the elapsed-time math uses the same
+-- clock as r.started (caller-passed level_time would mismatch across map
+-- changes and trigger spurious timeouts).
+function http.poll_pending(_unused)
     if not next(_pending) then return end
-    now = now or ((et and et.trap_Milliseconds and et.trap_Milliseconds()) or 0)
+    local now = (et and et.trap_Milliseconds and et.trap_Milliseconds()) or 0
     for id, r in pairs(_pending) do
         local df = io.open(r.done, "r")
         if df then
