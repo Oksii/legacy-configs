@@ -1,6 +1,6 @@
 --[[
     stats.lua  — root module for ETLegacy game stats collection
-    Version: 2.3.0
+    Version: 2.4.0
 
     All user-facing settings live in the CONFIGURATION block below.
     config.toml is kept only for map-specific patterns and common buildables.
@@ -54,8 +54,8 @@ local AUTO_CONFIG_MAP = {
 }
 
 -- [AUTO-START TIMING]
-local AUTO_START_WAIT_INITIAL   = 300    -- seconds  (First Round, 7min)
-local AUTO_START_WAIT           = 120    -- seconds  (Consecutive Rounds, 3 min)
+local AUTO_START_WAIT_INITIAL   = 420    -- seconds  (First Round, 7min)
+local AUTO_START_WAIT           = 180    -- seconds  (Consecutive Rounds, 3 min)
 
 -- [AUTO-START PHASED MODE]
 -- "simple"  → single window using AUTO_START_WAIT_INITIAL / AUTO_START_WAIT (default).
@@ -73,7 +73,7 @@ local SAVE_STATS_DELAY          = 3000   -- ms after intermission before SaveSta
 
 -- [MODULE]
 local MODNAME                   = "stats"
-local VERSION                   = "2.3.0"
+local VERSION                   = "2.4.0"
 
 -- [ENV OVERRIDES]
 -- Any setting above can be overridden by an environment variable of the same
@@ -573,13 +573,10 @@ end
 function et_Revive(revivee, reviver, invulnEndTime)
     if not COLLECT_GAMELOG then return end
 
-    local revivee_entry = players.guids[revivee]
-    local reviver_entry = players.guids[reviver]
+    local reviver_snap = players.get_snapshot(reviver)
+    local revivee_snap = players.get_snapshot(revivee)
 
-    gamelog.revive(
-        reviver_entry and reviver_entry.guid or "WORLD",
-        revivee_entry and revivee_entry.guid or "WORLD"
-    )
+    gamelog.revive(reviver_snap, revivee_snap)
 end
 
 -- ============================================================ --

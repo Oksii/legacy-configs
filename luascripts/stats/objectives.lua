@@ -469,8 +469,10 @@ function objectives.handle_print(text)
     if _collect_shovestats and string.find(text, "Shove:", 1, true) then
         local shover_str, target_str = text:match("^Shove: (%d+) (%d+)")
         if shover_str then
-            local shover_entry = players_ref.guids[tonumber(shover_str)]
-            local target_entry = players_ref.guids[tonumber(target_str)]
+            local shover_num = tonumber(shover_str)
+            local target_num = tonumber(target_str)
+            local shover_entry = players_ref.guids[shover_num]
+            local target_entry = players_ref.guids[target_num]
             if shover_entry and target_entry then
                 local shover_guid = shover_entry.guid
                 local target_guid = target_entry.guid
@@ -478,7 +480,11 @@ function objectives.handle_print(text)
                 record_obj_stat(target_guid, "shoves_received", shover_guid)
 
                 if _collect_gamelog and gamelog_ref then
-                    gamelog_ref.shove(shover_guid, target_guid)
+                    local shover_snap = players_ref.get_snapshot(shover_num)
+                        or { guid = shover_guid }
+                    local target_snap = players_ref.get_snapshot(target_num)
+                        or { guid = target_guid }
+                    gamelog_ref.shove(shover_snap, target_snap)
                 end
             end
         end

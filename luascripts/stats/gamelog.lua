@@ -129,10 +129,14 @@ function gamelog.damage(killer_snap, victim_snap, damage, damage_flags, weapon, 
 end
 
 -- Revive
-function gamelog.revive(medic_guid, victim_guid)
+function gamelog.revive(medic_snap, revivee_snap)
     gamelog.record("revive", "player", {
-        player = medic_guid,
-        victim = victim_guid,
+        player        = medic_snap   and medic_snap.guid,
+        victim        = revivee_snap and revivee_snap.guid,
+        player_pos    = utils.fmt_pos(medic_snap   and medic_snap.pos),
+        player_stance = stance_of(medic_snap),
+        victim_pos    = utils.fmt_pos(revivee_snap and revivee_snap.pos),
+        victim_stance = stance_of(revivee_snap),
     })
 end
 
@@ -197,10 +201,14 @@ function gamelog.weapon_fire(snap, weapon, pitch, yaw)
 end
 
 -- Shove
-function gamelog.shove(shover_guid, target_guid)
+function gamelog.shove(shover_snap, target_snap)
     gamelog.record("shove", "player", {
-        player = shover_guid,
-        victim = target_guid,
+        player        = shover_snap and shover_snap.guid,
+        victim        = target_snap and target_snap.guid,
+        player_pos    = utils.fmt_pos(shover_snap and shover_snap.pos),
+        player_stance = stance_of(shover_snap),
+        victim_pos    = utils.fmt_pos(target_snap and target_snap.pos),
+        victim_stance = stance_of(target_snap),
     })
 end
 
