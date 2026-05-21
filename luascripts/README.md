@@ -250,6 +250,10 @@ Ordered array of all events that occurred during the round. Every entry has:
 |-------|-------------|
 | `player` | Medic GUID (from `et_Revive` engine callback) |
 | `victim` | Revived player GUID |
+| `player_pos` | `"x y z"` medic origin at moment of revive |
+| `player_stance` | Medic stance snapshot |
+| `victim_pos` | `"x y z"` revivee origin at moment of revive |
+| `victim_stance` | Revivee stance snapshot |
 
 **`class_change`** — player switched class
 
@@ -302,6 +306,10 @@ Ordered array of all events that occurred during the round. Every entry has:
 |-------|-------------|
 | `player` | Shover GUID |
 | `victim` | Shoved player GUID |
+| `player_pos` | `"x y z"` shover origin at moment of shove |
+| `player_stance` | Shover stance snapshot |
+| `victim_pos` | `"x y z"` shoved player origin at moment of shove |
+| `victim_stance` | Shoved player stance snapshot |
 
 **`weapon_fire`** — every weapon shot; only present when `COLLECT_WEAPON_FIRE = true`
 
@@ -552,10 +560,14 @@ interface DamageEvent extends GamelogEventBase {
 }
 
 interface ReviveEvent extends GamelogEventBase {
-  group:  "player";
-  label:  "revive";
-  player: Guid;  // medic
-  victim: Guid;  // revived player
+  group:         "player";
+  label:         "revive";
+  player:        Guid;  // medic
+  victim:        Guid;  // revived player
+  player_pos:    Position | null;
+  player_stance: StanceSnapshot | null;
+  victim_pos:    Position | null;
+  victim_stance: StanceSnapshot | null;
 }
 
 interface ClassChangeEvent extends GamelogEventBase {
@@ -604,10 +616,14 @@ interface PickupEvent extends GamelogEventBase {
 }
 
 interface ShoveEvent extends GamelogEventBase {
-  group:  "player";
-  label:  "shove";
-  player: Guid;  // shover
-  victim: Guid;  // shoved
+  group:         "player";
+  label:         "shove";
+  player:        Guid;  // shover
+  victim:        Guid;  // shoved
+  player_pos:    Position | null;
+  player_stance: StanceSnapshot | null;
+  victim_pos:    Position | null;
+  victim_stance: StanceSnapshot | null;
 }
 
 interface WeaponFireEvent extends GamelogEventBase {
