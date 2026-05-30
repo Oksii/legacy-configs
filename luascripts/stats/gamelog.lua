@@ -27,6 +27,8 @@ end
 
 
 -- gamelog.record(label, group, fields)
+-- leveltime/unixtime are raw (paused time is removed downstream in ingest using the
+-- pause/unpause markers -- see gamelog.pause_start/pause_end).
 function gamelog.record(label, group, fields)
     if not _enabled then return end
 
@@ -230,6 +232,16 @@ end
 
 function gamelog.round_end()
     gamelog.record("round_end", "server", {})
+end
+
+-- Pause markers. Emitted on pause/unpause so ingest can subtract paused time from the
+-- timeline (drift = unpause.leveltime - pause.leveltime). Purely informational here.
+function gamelog.pause_start()
+    gamelog.record("pause", "server", {})
+end
+
+function gamelog.pause_end()
+    gamelog.record("unpause", "server", {})
 end
 
 function gamelog.get(match_id, round_id)

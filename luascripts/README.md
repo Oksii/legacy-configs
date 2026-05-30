@@ -156,11 +156,22 @@ Ordered array of all events that occurred during the round. Every entry has:
 |-------|------|-------------|
 | `match_id` | string | Match ID (injected at save time) |
 | `round_id` | number | Round number (injected at save time) |
-| `unixtime` | number | Unix timestamp in **milliseconds** when event was recorded |
-| `leveltime` | number | Server level time (ms) when event was recorded |
+| `unixtime` | number | Real wall-clock timestamp in **milliseconds** when event was recorded. Keeps advancing through a pause — use it for real-world durations. |
+| `leveltime` | number | Pause-excluding match clock (ms): `level.time − CS_LEVEL_START_TIME`. This is the engine's own pause-adjusted clock (the one `timelimit` / `nextTimeLimit` / reinforcements use), so the timeline stays consistent with the reported round duration. Use it for the in-round event timeline. |
 | `group` | string | `"player"` or `"server"` |
 | `label` | string | Event type (see below) |
 | ...fields | — | Event-specific fields |
+
+> **Pauses & the two clocks.** `level.time` keeps advancing during a pause (`/pause`,
+> `ref pause`, vote pause, techpause, timeouts) — it does *not* freeze. But the engine pushes
+> `CS_LEVEL_START_TIME` forward by the paused duration, so `level.time − CS_LEVEL_START_TIME`
+> excludes pauses by construction. `leveltime` uses that, so a pause collapses out of the axis
+> (no leading/empty gap; duration matches real gameplay). `unixtime` is untouched real wall-clock
+> time and so *includes* the pause. Each pause is also marked by a `pause` / `unpause`
+> server-event pair (see below): the pair sits at ~the same `leveltime`, and the real pause
+> length is `unpause.unixtime − pause.unixtime`. (Note: the engine throttles the
+> `CS_LEVEL_START_TIME` update to ~500 ms steps, so `leveltime` may run up to ~0.5 s long per
+> pause — negligible for an event timeline.)
 
 #### Event types
 
@@ -328,6 +339,8 @@ Ordered array of all events that occurred during the round. Every entry has:
 |-------|-------------|
 | `round_start` | Emitted when gamestate transitions to GS_PLAYING |
 | `round_end` | Emitted when gamestate transitions to GS_INTERMISSION |
+| `pause` | Match was paused during a live round (any pause vector). `leveltime` is frozen at the pause point. |
+| `unpause` | Match resumed. Same `leveltime` as the preceding `pause`; real pause length = `unpause.unixtime − pause.unixtime`. |
 
 **Stance snapshot** (embedded in kill / teamkill / damage / pickup / weapon_fire events):
 
@@ -352,7 +365,7 @@ Ordered array of all events that occurred during the round. Every entry has:
 // ─── Primitives ────────────────────────────────────────────────────────────
 
 type Guid        = string;  // 32-char uppercase hex player GUID
-type LevelTime   = number;  // server milliseconds since map load
+type LevelTime   = number;  // pause-excluding match clock in ms (level.time - CS_LEVEL_START_TIME)
 type UnixTime    = number;  // Unix timestamp (seconds)
 type Position    = string;  // "x y z" integer coords
 
@@ -472,8 +485,8 @@ type PlayerStats = Record<Guid, PlayerStat>;
 interface GamelogEventBase {
   match_id:  string;
   round_id:  number;
-  unixtime:  number;  // milliseconds since Unix epoch
-  leveltime: LevelTime;
+  unixtime:  number;     // wall-clock ms since Unix epoch; includes pause time
+  leveltime: LevelTime;  // pause-excluding match clock (level.time - CS_LEVEL_START_TIME)
   group:     "player" | "server";
   label:     string;
 }
@@ -639,13 +652,15 @@ interface WeaponFireEvent extends GamelogEventBase {
 
 interface RoundStartEvent extends GamelogEventBase { group: "server"; label: "round_start"; }
 interface RoundEndEvent   extends GamelogEventBase { group: "server"; label: "round_end";   }
+interface PauseEvent      extends GamelogEventBase { group: "server"; label: "pause";       }
+interface UnpauseEvent    extends GamelogEventBase { group: "server"; label: "unpause";     }
 
 type GamelogEvent =
   | SpawnEvent | KillEvent | SuicideEvent | TeamkillEvent | DamageEvent
   | ReviveEvent | ClassChangeEvent | MessageEvent
   | ObjectiveEvent | FlagCapturedEvent | PickupEvent | ShoveEvent
   | WeaponFireEvent
-  | RoundStartEvent | RoundEndEvent;
+  | RoundStartEvent | RoundEndEvent | PauseEvent | UnpauseEvent;
 
 // ─── metadata ──────────────────────────────────────────────────────────────
 

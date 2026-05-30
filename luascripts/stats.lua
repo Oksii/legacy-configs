@@ -1,6 +1,6 @@
 --[[
     stats.lua  — root module for ETLegacy game stats collection
-    Version: 2.4.0
+    Version: 2.5.0
 
     All user-facing settings live in the CONFIGURATION block below.
     config.toml is kept only for map-specific patterns and common buildables.
@@ -73,7 +73,7 @@ local SAVE_STATS_DELAY          = 3000   -- ms after intermission before SaveSta
 
 -- [MODULE]
 local MODNAME                   = "stats"
-local VERSION                   = "2.4.0"
+local VERSION                   = "2.5.0"
 
 -- [ENV OVERRIDES]
 -- Any setting above can be overridden by an environment variable of the same
@@ -162,6 +162,16 @@ local next_store_time           = 0
 local level_time                = 0
 local _deferred_init_pending    = false
 local _ng_round_start_pending   = false
+local _was_paused               = false  -- tracks CS_SERVERTOGGLES pause bit across frames
+
+-- CS_SERVERTOGGLES pause flag: engine sets level.server_settings |= CV_SVS_PAUSE on pause.
+local CV_SVS_PAUSE              = 16
+local CS_SERVERTOGGLES          = et.CS_SERVERTOGGLES
+local function server_is_paused()
+    if not CS_SERVERTOGGLES then return false end
+    local toggles = tonumber(et.trap_GetConfigstring(CS_SERVERTOGGLES)) or 0
+    return (math.floor(toggles / CV_SVS_PAUSE) % 2) == 1
+end
 
 -- [SHARED CONFIG TABLE] (passed to modules at init)
 local function build_cfg()
@@ -459,6 +469,18 @@ function et_RunFrame(frame_level_time)
     gamestate._last_gs_raw = gs_raw
     gamestate.handle_change(current_gs, server_ip, server_port, frame_level_time)
     gamestate.tick(frame_level_time, server_ip, server_port)
+
+    -- Pause markers: emit pause/unpause gamelog events on CS_SERVERTOGGLES transitions
+    -- while a round is live. Ingest uses the pair to subtract paused time from the timeline.
+    if COLLECT_GAMELOG and current_gs == et.GS_PLAYING then
+        local paused = server_is_paused()
+        if paused ~= _was_paused then
+            if paused then gamelog.pause_start() else gamelog.pause_end() end
+            _was_paused = paused
+        end
+    elseif _was_paused then
+        _was_paused = false
+    end
 
     if current_gs == et.GS_PLAYING and gamestate.round_start_time == 0 then
         gamestate.round_start_time = frame_level_time
