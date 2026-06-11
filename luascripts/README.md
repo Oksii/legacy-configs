@@ -156,22 +156,20 @@ Ordered array of all events that occurred during the round. Every entry has:
 |-------|------|-------------|
 | `match_id` | string | Match ID (injected at save time) |
 | `round_id` | number | Round number (injected at save time) |
-| `unixtime` | number | Real wall-clock timestamp in **milliseconds** when event was recorded. Keeps advancing through a pause — use it for real-world durations. |
-| `leveltime` | number | Pause-excluding match clock (ms): `level.time − CS_LEVEL_START_TIME`. This is the engine's own pause-adjusted clock (the one `timelimit` / `nextTimeLimit` / reinforcements use), so the timeline stays consistent with the reported round duration. Use it for the in-round event timeline. |
+| `unixtime` | number | Wall-clock timestamp in **milliseconds** when the event was recorded. |
+| `leveltime` | number | Server level time (ms) when the event was recorded. Raw as emitted — see the pause note below. |
 | `group` | string | `"player"` or `"server"` |
 | `label` | string | Event type (see below) |
 | ...fields | — | Event-specific fields |
 
-> **Pauses & the two clocks.** `level.time` keeps advancing during a pause (`/pause`,
-> `ref pause`, vote pause, techpause, timeouts) — it does *not* freeze. But the engine pushes
-> `CS_LEVEL_START_TIME` forward by the paused duration, so `level.time − CS_LEVEL_START_TIME`
-> excludes pauses by construction. `leveltime` uses that, so a pause collapses out of the axis
-> (no leading/empty gap; duration matches real gameplay). `unixtime` is untouched real wall-clock
-> time and so *includes* the pause. Each pause is also marked by a `pause` / `unpause`
-> server-event pair (see below): the pair sits at ~the same `leveltime`, and the real pause
-> length is `unpause.unixtime − pause.unixtime`. (Note: the engine throttles the
-> `CS_LEVEL_START_TIME` update to ~500 ms steps, so `leveltime` may run up to ~0.5 s long per
-> pause — negligible for an event timeline.)
+> **Pauses.** `leveltime` and `unixtime` are emitted **raw** and keep advancing while a match is
+> paused (`/pause`, `ref pause`, vote pause, techpause, timeouts), so a paused round leaves a gap
+> in the timeline. The script does **not** correct this itself — it only emits a `pause` /
+> `unpause` server-event pair (see below) bracketing each pause. Downstream ingest removes the
+> paused time by subtracting `unpause.leveltime − pause.leveltime` from subsequent events, so the
+> stored/served timeline reflects actual gameplay. This keeps the lua engine-agnostic: if a future
+> engine instead freezes the clock during a pause, the markers simply show no drift and ingest
+> does nothing.
 
 #### Event types
 
@@ -209,9 +207,11 @@ Ordered array of all events that occurred during the round. Every entry has:
 |-------|-------------|
 | `player` | GUID |
 | `weapon` | meansOfDeath |
+| `team` | Team number of the dying player |
 | `victim_class` | Class |
 | `victim_pos` | `"x y z"` |
 | `victim_stance` | Stance snapshot |
+| `victim_reinf` | Seconds until the dying player's team next reinforce wave |
 
 **`teamkill`** — killed a teammate
 
@@ -225,6 +225,7 @@ Ordered array of all events that occurred during the round. Every entry has:
 | `victim_class` | Class |
 | `victim_health` | Victim health at time of kill |
 | `victim_stance` | Stance snapshot |
+| `victim_reinf` | Seconds until victim's team next reinforce wave |
 
 **`damage`** — every damage event (high volume)
 
@@ -339,8 +340,8 @@ Ordered array of all events that occurred during the round. Every entry has:
 |-------|-------------|
 | `round_start` | Emitted when gamestate transitions to GS_PLAYING |
 | `round_end` | Emitted when gamestate transitions to GS_INTERMISSION |
-| `pause` | Match was paused during a live round (any pause vector). `leveltime` is frozen at the pause point. |
-| `unpause` | Match resumed. Same `leveltime` as the preceding `pause`; real pause length = `unpause.unixtime − pause.unixtime`. |
+| `pause` | Match was paused during a live round (any pause vector). Emitted at the pause's raw `leveltime`. |
+| `unpause` | Match resumed. Ingest subtracts `unpause.leveltime − pause.leveltime` from later events; real pause length = `unpause.unixtime − pause.unixtime`. |
 
 **Stance snapshot** (embedded in kill / teamkill / damage / pickup / weapon_fire events):
 
@@ -365,7 +366,7 @@ Ordered array of all events that occurred during the round. Every entry has:
 // ─── Primitives ────────────────────────────────────────────────────────────
 
 type Guid        = string;  // 32-char uppercase hex player GUID
-type LevelTime   = number;  // pause-excluding match clock in ms (level.time - CS_LEVEL_START_TIME)
+type LevelTime   = number;  // server milliseconds since map load (raw; paused time removed in ingest)
 type UnixTime    = number;  // Unix timestamp (seconds)
 type Position    = string;  // "x y z" integer coords
 
@@ -485,8 +486,8 @@ type PlayerStats = Record<Guid, PlayerStat>;
 interface GamelogEventBase {
   match_id:  string;
   round_id:  number;
-  unixtime:  number;     // wall-clock ms since Unix epoch; includes pause time
-  leveltime: LevelTime;  // pause-excluding match clock (level.time - CS_LEVEL_START_TIME)
+  unixtime:  number;     // wall-clock ms since Unix epoch (raw; includes pause time)
+  leveltime: LevelTime;  // server ms since map load (raw; paused time removed in ingest)
   group:     "player" | "server";
   label:     string;
 }
@@ -535,9 +536,11 @@ interface SuicideEvent extends GamelogEventBase {
   label:         "suicide";
   player:        Guid;
   weapon:        number;
+  team:          TeamNumber;
   victim_class:  PlayerClass;
   victim_pos:    Position;
   victim_stance: StanceSnapshot;
+  victim_reinf:  number;  // seconds until the dying player's team next reinforces
 }
 
 interface TeamkillEvent extends GamelogEventBase {
@@ -551,6 +554,7 @@ interface TeamkillEvent extends GamelogEventBase {
   victim_class:  PlayerClass;
   victim_health: number;
   victim_stance: StanceSnapshot;
+  victim_reinf:  number;  // seconds until victim's team next reinforces
 }
 
 interface DamageEvent extends GamelogEventBase {

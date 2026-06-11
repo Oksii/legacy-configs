@@ -85,19 +85,22 @@ function gamelog.kill(killer_snap, victim_snap, weapon, allies_alive, axis_alive
     })
 end
 
--- Suicide
-function gamelog.suicide(victim_snap, weapon)
+-- Suicide. victim_reinf/team describe the dying player (the player is the victim
+-- of their own death) so downstream full-spawn detection can use the exact reinf.
+function gamelog.suicide(victim_snap, weapon, victim_reinf, team)
     gamelog.record("suicide", "player", {
         player        = victim_snap and victim_snap.guid,
         weapon        = weapon,
+        team          = team,
         victim_class  = victim_snap and victim_snap.class,
         victim_pos    = utils.fmt_pos(victim_snap and victim_snap.pos),
         victim_stance = stance_of(victim_snap),
+        victim_reinf  = victim_reinf,
     })
 end
 
 -- Teamkill
-function gamelog.teamkill(killer_snap, victim_snap, weapon)
+function gamelog.teamkill(killer_snap, victim_snap, weapon, victim_reinf)
     gamelog.record("teamkill", "player", {
         killer          = killer_snap and killer_snap.guid,
         victim          = victim_snap  and victim_snap.guid,
@@ -107,6 +110,7 @@ function gamelog.teamkill(killer_snap, victim_snap, weapon)
         victim_class    = victim_snap  and victim_snap.class,
         victim_health   = victim_snap  and victim_snap.health,
         victim_stance   = stance_of(victim_snap),
+        victim_reinf    = victim_reinf,
     })
 end
 

@@ -153,13 +153,16 @@ function events.on_obituary(target, attacker, mod)
 
     if _collect_gamelog and gamelog_ref then
         if is_suicide then
-            local victim_snap = players_ref.get_snapshot(target)
-            gamelog_ref.suicide(victim_snap, mod)
+            local victim_snap  = players_ref.get_snapshot(target)
+            local victim_reinf = victim_entry and calc_reinf_time(victim_entry.team) or 0
+            local victim_team  = victim_entry and victim_entry.team
+            gamelog_ref.suicide(victim_snap, mod, victim_reinf, victim_team)
 
         elseif is_teamkill then
-            local killer_snap = players_ref.get_snapshot(attacker)
-            local victim_snap = players_ref.get_snapshot(target)
-            gamelog_ref.teamkill(killer_snap, victim_snap, mod)
+            local killer_snap  = players_ref.get_snapshot(attacker)
+            local victim_snap  = players_ref.get_snapshot(target)
+            local victim_reinf = victim_entry and calc_reinf_time(victim_entry.team) or 0
+            gamelog_ref.teamkill(killer_snap, victim_snap, mod, victim_reinf)
 
         else
             local killer_snap  = players_ref.get_snapshot(attacker)
