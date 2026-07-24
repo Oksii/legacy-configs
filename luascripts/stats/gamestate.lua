@@ -14,6 +14,7 @@ local movement_ref
 local gamelog_ref
 local events_ref
 local objectives_ref
+local vehicle_ref
 local gather_ref
 local api_ref
 local stats_ref
@@ -41,6 +42,7 @@ function gamestate.init(cfg, log_ref, all_modules)
     gamelog_ref    = all_modules.gamelog
     events_ref     = all_modules.events
     objectives_ref = all_modules.objectives
+    vehicle_ref    = all_modules.vehicle
     gather_ref     = all_modules.gather
     api_ref        = all_modules.api
     stats_ref      = all_modules.stats
@@ -110,6 +112,8 @@ function gamestate.handle_change(new_gs, server_ip, server_port, frame_time)
         gamestate.round_end_time = et.trap_Milliseconds()
         gamestate.round_end_unix = os.time()
 
+        -- vehicle summary must land in the gamelog before the round_end marker
+        if vehicle_ref then vehicle_ref.round_end() end
         if gamelog_ref then gamelog_ref.round_end() end
 
         if gather_ref then

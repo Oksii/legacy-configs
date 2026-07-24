@@ -170,6 +170,54 @@ function gamelog.obj_flag_captured(guid, flag_name)
     })
 end
 
+-- Killed an enemy objective carrier — credited to the killer
+function gamelog.obj_carrier_killed(killer_guid, victim_guid, obj_name, weapon)
+    gamelog.record("obj_carrierkilled", "player", {
+        player    = killer_guid,
+        victim    = victim_guid,
+        objective = obj_name,
+        weapon    = weapon,
+    })
+end
+
+function gamelog.obj_dropped(guid, obj_name, pos)
+    gamelog.record("obj_dropped", "player", {
+        player    = guid,
+        objective = obj_name,
+        pos       = pos,
+    })
+end
+
+-- Damage to a non-vehicle damageable objective (command post, destroyable
+-- walls). Only hits passing the engine's weapon-class gate arrive here.
+function gamelog.obj_damage(guid, damage, target_name)
+    gamelog.record("obj_damage", "player", {
+        player = guid,
+        damage = damage,
+        target = target_name,
+    })
+end
+
+-- Vehicle timeline / telemetry event (label e.g. "vehicle_started",
+-- "vehicle_stopped", "vehicle_damaged", "vehicle_repaired", "vehicle_pos",
+-- "vehicle_damage", "vehicle_summary")
+function gamelog.vehicle_event(label, vehicle_name, fields)
+    local ev = { vehicle = vehicle_name }
+    if fields then
+        for k, v in pairs(fields) do ev[k] = v end
+    end
+    gamelog.record(label, "vehicle", ev)
+end
+
+-- Objective-carrier position telemetry sample
+function gamelog.carrier_pos(guid, obj_name, pos)
+    gamelog.record("carrier_pos", "player", {
+        player    = guid,
+        objective = obj_name,
+        pos       = pos,
+    })
+end
+
 -- Pickup from console log
 function gamelog.pickup(player_snap, item, owner_snap)
     gamelog.record("pickup", "player", {

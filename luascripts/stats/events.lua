@@ -12,9 +12,16 @@ local log
 local players_ref
 local gamelog_ref
 local objectives_ref
+local vehicle_ref
+
+local MAX_CLIENT_SLOTS = 64  -- entity numbers below this are always clients
+local ET_CONSTRUCTIBLE = 33  -- entityType_t: engineer build/destroy objectives
+                             -- (CP, breach walls, barriers). Not exposed as an
+                             -- et.* constant, so matched numerically.
 
 local _collect_gamelog      = true
 local _collect_weapon_fire  = false
+local _collect_obj_damage   = false
 local _maxClients           = 64
 
 local CON_CONNECTED = 2
@@ -45,14 +52,16 @@ local _aReinfOffset     = {}  -- populated by parse_reinf_times()
 local _level_time       = 0   -- updated from et_RunFrame via events.set_level_time()
 
 
-function events.init(cfg, log_ref, players_module, gamelog_module, objectives_module)
+function events.init(cfg, log_ref, players_module, gamelog_module, objectives_module, vehicle_module)
     log            = log_ref
     players_ref    = players_module
     gamelog_ref    = gamelog_module
     objectives_ref = objectives_module
+    vehicle_ref    = vehicle_module
 
     _collect_gamelog     = cfg.collect_gamelog
     _collect_weapon_fire = cfg.collect_weapon_fire or false
+    _collect_obj_damage  = cfg.collect_vehicle_damage or false
     _maxClients          = cfg.maxClients or 64
 end
 
@@ -152,21 +161,32 @@ function events.on_obituary(target, attacker, mod)
                      and attacker_guid ~= "WORLD"
 
     if _collect_gamelog and gamelog_ref then
+        -- The engine drops carried objectives (G_DropItems) before this hook
+        -- runs, so the victim's flag powerup is already cleared — restore the
+        -- carrying state from the objectives carrier table.
+        local function fix_carrier_stance(snap)
+            if snap and objectives_ref and objectives_ref.is_carrier
+            and objectives_ref.is_carrier(target) then
+                snap.is_carrying_obj = true
+            end
+            return snap
+        end
+
         if is_suicide then
-            local victim_snap  = players_ref.get_snapshot(target)
+            local victim_snap  = fix_carrier_stance(players_ref.get_snapshot(target))
             local victim_reinf = victim_entry and calc_reinf_time(victim_entry.team) or 0
             local victim_team  = victim_entry and victim_entry.team
             gamelog_ref.suicide(victim_snap, mod, victim_reinf, victim_team)
 
         elseif is_teamkill then
             local killer_snap  = players_ref.get_snapshot(attacker)
-            local victim_snap  = players_ref.get_snapshot(target)
+            local victim_snap  = fix_carrier_stance(players_ref.get_snapshot(target))
             local victim_reinf = victim_entry and calc_reinf_time(victim_entry.team) or 0
             gamelog_ref.teamkill(killer_snap, victim_snap, mod, victim_reinf)
 
         else
             local killer_snap  = players_ref.get_snapshot(attacker)
-            local victim_snap  = players_ref.get_snapshot(target)
+            local victim_snap  = fix_carrier_stance(players_ref.get_snapshot(target))
             local alive        = players_ref.count_alive()
             local killer_reinf = attacker_entry and calc_reinf_time(attacker_entry.team) or 0
             local victim_reinf = victim_entry   and calc_reinf_time(victim_entry.team)   or 0
@@ -181,6 +201,45 @@ end
 
 
 function events.on_damage(target, attacker, damage, damage_flags, mod)
+    -- Non-client target: escort vehicle or a damageable objective. et_Damage
+    -- fires for every damageable entity — corpse gibs (ET_CORPSE),
+    -- func_explosive breakables and decorative props (chairs, windows,
+    -- paintings) all reach here — so past the vehicle hand-off we keep only
+    -- ET_CONSTRUCTIBLE (command posts, breach walls, barriers) and drop the rest.
+    if type(target) == "number" and target >= MAX_CLIENT_SLOTS then
+        local now = et.trap_Milliseconds()
+        if vehicle_ref and vehicle_ref.on_damage(target, attacker, damage, now) then
+            return
+        end
+
+        if (tonumber(et.gentity_get(target, "s.eType")) or -1) ~= ET_CONSTRUCTIBLE then
+            return
+        end
+
+        if objectives_ref and objectives_ref.on_entity_damage then
+            objectives_ref.on_entity_damage(target, attacker, now)
+        end
+
+        if _collect_obj_damage and _collect_gamelog and gamelog_ref then
+            local entry = players_ref.guids[attacker]
+            if entry and entry.guid and entry.guid ~= "WORLD" then
+                -- Clamp to remaining health: the engine passes raw damage and
+                -- subtracts health only after this hook, so an airstrike
+                -- overkilling a near-dead objective would otherwise report its
+                -- full amount instead of the fraction that mattered.
+                local hp  = tonumber(et.gentity_get(target, "health")) or 0
+                local eff = math.min(damage or 0, math.max(0, hp))
+                if eff > 0 then
+                    local name = et.gentity_get(target, "track")
+                    if not name or name == "" then name = et.gentity_get(target, "scriptName") end
+                    if not name or name == "" then name = et.gentity_get(target, "classname") end
+                    gamelog_ref.obj_damage(entry.guid, eff, name or "unknown")
+                end
+            end
+        end
+        return
+    end
+
     if not _collect_gamelog or not gamelog_ref then return end
 
     local hit_region     = get_hit_region(attacker)

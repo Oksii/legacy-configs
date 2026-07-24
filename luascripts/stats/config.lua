@@ -98,6 +98,10 @@ local function process_map(map_name, map_data)
             entry.escort[utils.normalize(e_name)] = {
                 escort_pattern     = utils.normalize(e_data.escort_pattern or ""),
                 escort_coordinates = e_data.escort_coordinates,
+                -- vehicle.lua overrides: pin the script_mover, owning team, radius
+                script_name        = e_data.script_name,
+                team               = e_data.team and utils.normalize(e_data.team) or nil,
+                radius             = tonumber(e_data.radius),
             }
         end
     end
