@@ -2,6 +2,13 @@
     stats/objectives.lua
     Handles et_Print for all objective pattern matching, buildable tracking,
     flag/item pickups, shove tracking, and objective-carrier death attribution.
+
+    Attribution relies on the current ET:Legacy console output:
+      - "Item: N team_CTF_*flag" precedes the matching "legacy popup:" line
+        (same frame) for both steals AND returns — N is the acting client.
+      - "Objective_Destroyed: N <track>" — N is the planting client.
+      - "Repair: N" — N is the repairing client.
+    Older ET:Legacy builds that omitted these lines are not supported.
 --]]
 
 local objectives = {}
@@ -10,6 +17,7 @@ local utils = require("luascripts/stats/util/utils")
 local log
 local players_ref
 local gamelog_ref
+local vehicle_ref
 
 local _collect_objstats     = true
 local _collect_shovestats   = true
@@ -24,8 +32,7 @@ objectives.objstats         = {}
 local objective_carriers    = { players = {}, ids = {} }
 
 -- objective_states[obj_name] = {
---   last_popup, last_announce, last_action, timestamp,
---   carrier_id, planter_guid
+--   last_announce, last_action, timestamp, carrier_id, dropped
 -- }
 local objective_states      = {}
 
@@ -35,6 +42,23 @@ local ANNOUNCE_BUFFER       = 5
 local REPAIR_BUFFER_MS      = 2000
 local MAX_OBJ_DISTANCE      = 500  -- game units
 local pending_pickup        = nil
+
+-- Last "Item: N team_CTF_*flag" line — consumed by the popup that follows it.
+local pending_flag_touch    = nil  -- { clientNum, timestamp }
+local FLAG_TOUCH_WINDOW_MS  = 150
+
+-- Recent damage to non-client entities (from et_Damage), used to attribute
+-- destruction of buildables that emit no Objective_Destroyed line (e.g.
+-- command posts destroyed by direct fire/satchel).
+local recent_entity_damage  = {}   -- newest first: { entnum, attacker, timestamp }
+local ENTITY_DAMAGE_BUFFER  = 8
+local ENTITY_DAMAGE_WINDOW_MS = 1000
+local DESTROY_DEDUP_MS      = 1500
+
+-- Carrier position telemetry cadence (gated by collect_vehicle_telemetry)
+local _collect_telemetry    = false
+local CARRIER_POS_INTERVAL_MS = 1000
+local _last_carrier_pos_ms  = 0
 
 -- Active map config
 local _map_config           = nil
@@ -102,6 +126,8 @@ local function record_obj_stat(guid, event_type, objective, killer_info)
             obj_planted       = {},
             obj_destroyed     = {},
             obj_taken         = {},
+            obj_repickup      = {},
+            obj_dropped       = {},
             obj_returned      = {},
             obj_secured       = {},
             obj_repaired      = {},
@@ -109,7 +135,6 @@ local function record_obj_stat(guid, event_type, objective, killer_info)
             obj_carrierkilled = {},
             obj_flagcaptured  = {},
             obj_misc          = {},
-            obj_escort        = {},
             shoves_given      = {},
             shoves_received   = {},
         }
@@ -146,7 +171,6 @@ end
 local function update_objective_state(obj_name, action, guid, normalized_text)
     if not objective_states[obj_name] then
         objective_states[obj_name] = {
-            last_popup    = "",
             last_announce = "",
             last_action   = "",
             timestamp     = 0,
@@ -159,10 +183,6 @@ local function update_objective_state(obj_name, action, guid, normalized_text)
 
     if normalized_text then
         objective_states[obj_name].last_announce = normalized_text
-    end
-
-    if guid and action == "planted" then
-        objective_states[obj_name].planter_guid = guid.guid or guid
     end
 
     return ts
@@ -232,46 +252,33 @@ local function get_flag_coordinates()
 end
 
 
-local function get_active_covert_ops()
-    local COVERT_OPS = 4
-    local result = {}
-    for clientNum, entry in pairs(players_ref.guids) do
-        if entry.team == et.TEAM_AXIS or entry.team == et.TEAM_ALLIES then
-            local pt = tonumber(et.gentity_get(clientNum, "sess.playerType"))
-            if pt == COVERT_OPS then
-                table.insert(result, clientNum)
-            end
-        end
-    end
-    return result
-end
-
-
-local function handle_destroyer_attribution(obj_name)
-    local state = objective_states[obj_name]
-    if state and state.planter_guid then
-        return state.planter_guid, true
-    end
-
-    local coverts = get_active_covert_ops()
-    if #coverts == 1 then
-        local entry = players_ref.guids[coverts[1]]
-        return entry and entry.guid, true
-    end
-
-    return nil, false
-end
-
-
-local function handle_buildable_destruction(obj_name, normalized_text)
-    local destroyer_guid, found = handle_destroyer_attribution(obj_name)
-    if found and destroyer_guid then
-        record_obj_stat(destroyer_guid, "obj_destroyed", obj_name)
+local function emit_destroyed(guid, obj_name, normalized_text)
+    if guid then
+        record_obj_stat(guid, "obj_destroyed", obj_name)
         if _collect_gamelog and gamelog_ref then
-            gamelog_ref.objective("obj_destroyed", destroyer_guid, obj_name)
+            gamelog_ref.objective("obj_destroyed", guid, obj_name)
         end
     end
     update_objective_state(obj_name, "destroyed", nil, normalized_text)
+end
+
+
+-- Announce-only destructions (no Objective_Destroyed line, e.g. command posts):
+-- attribute to whoever last damaged a non-client entity — the destruction
+-- announce fires in the same frame as the killing blow.
+local function handle_buildable_destruction(obj_name, normalized_text)
+    local current_time = et.trap_Milliseconds()
+    local guid
+    for _, dmg in ipairs(recent_entity_damage) do
+        if (current_time - dmg.timestamp) <= ENTITY_DAMAGE_WINDOW_MS then
+            local entry = players_ref.guids[dmg.attacker]
+            if entry and entry.guid and entry.guid ~= "WORLD" then
+                guid = entry.guid
+                break
+            end
+        end
+    end
+    emit_destroyed(guid, obj_name, normalized_text)
 end
 
 
@@ -372,14 +379,16 @@ local function handle_dynamite_event(text, event_type, action_name)
 end
 
 
-function objectives.init(cfg, log_ref, players_module, gamelog_module)
+function objectives.init(cfg, log_ref, players_module, gamelog_module, vehicle_module)
     log                 = log_ref
     players_ref         = players_module
     gamelog_ref         = gamelog_module
+    vehicle_ref         = vehicle_module
 
     _collect_objstats   = cfg.collect_obj_stats
     _collect_shovestats = cfg.collect_shove_stats
     _collect_gamelog    = cfg.collect_gamelog
+    _collect_telemetry  = cfg.collect_vehicle_telemetry or false
     _maxClients         = cfg.maxClients or 64
 end
 
@@ -393,12 +402,11 @@ function objectives.init_map(map_config, common_buildables)
     if map_config.objectives then
         for _, obj in ipairs(map_config.objectives) do
             objective_states[obj.name] = {
-                last_popup    = "",
                 last_announce = "",
                 last_action   = "",
                 carrier_id    = nil,
+                dropped       = false,
                 timestamp     = 0,
-                planter_guid  = nil,
             }
         end
     end
@@ -406,7 +414,6 @@ function objectives.init_map(map_config, common_buildables)
     if map_config.buildables then
         for obj_name, _ in pairs(map_config.buildables) do
             objective_states[obj_name] = objective_states[obj_name] or {
-                last_popup    = "",
                 last_announce = "",
                 last_action   = "",
                 timestamp     = 0,
@@ -493,21 +500,46 @@ function objectives.handle_print(text)
     if not _map_config then return end
     if not _collect_objstats then return end
 
-    -- Objective_Destroyed: <id> <text>
+    -- Objective_Destroyed: <id> <track>
+    -- id is the planting client; track is the same text the Dynamite_Plant
+    -- line carried, so plant_pattern resolves the objective name.
     if string.find(text, "Objective_Destroyed:", 1, true) then
         local id_str, obj_text = text:match("^Objective_Destroyed: (%d+) (.+)$")
         if id_str and obj_text then
             local normalized = utils.normalize(obj_text:match("^%s*(.-)%s*$") or obj_text)
-            if _map_config.buildables then
+            local entry      = players_ref.guids[tonumber(id_str)]
+            local guid       = entry and entry.guid
+
+            local resolved
+            if _common_buildables and _map_config.buildables then
+                for obj_name, common_cfg in pairs(_common_buildables) do
+                    if _map_config.buildables[obj_name]
+                    and type(common_cfg.patterns) == "table" and common_cfg.patterns.plant then
+                        for _, p in ipairs(common_cfg.patterns.plant) do
+                            if string.find(normalized, utils.normalize(p)) then
+                                resolved = obj_name
+                                break
+                            end
+                        end
+                    end
+                    if resolved then break end
+                end
+            end
+            if not resolved and _map_config.buildables then
                 for obj_name, obj_cfg in pairs(_map_config.buildables) do
-                    if type(obj_cfg) == "table"
-                    and obj_cfg.destruct_pattern and obj_cfg.destruct_pattern ~= ""
-                    and string.find(normalized, utils.normalize(obj_cfg.destruct_pattern)) then
-                        handle_buildable_destruction(obj_name, normalized)
-                        break
+                    if type(obj_cfg) == "table" then
+                        if (obj_cfg.plant_pattern and obj_cfg.plant_pattern ~= ""
+                            and string.find(normalized, utils.normalize(obj_cfg.plant_pattern)))
+                        or (obj_cfg.destruct_pattern and obj_cfg.destruct_pattern ~= ""
+                            and string.find(normalized, utils.normalize(obj_cfg.destruct_pattern))) then
+                            resolved = obj_name
+                            break
+                        end
                     end
                 end
             end
+
+            emit_destroyed(guid, resolved or normalized, normalized)
         end
     end
 
@@ -548,7 +580,12 @@ function objectives.handle_print(text)
                     if matched_construct then
                         update_objective_state(obj_name, "constructed", nil, normalized)
                     elseif matched_destruct then
-                        handle_buildable_destruction(obj_name, normalized)
+                        local state = objective_states[obj_name]
+                        if not (state
+                            and state.last_action == "destroyed"
+                            and (current_time - state.timestamp) < DESTROY_DEDUP_MS) then
+                            handle_buildable_destruction(obj_name, normalized)
+                        end
                     end
                 end
             end
@@ -567,7 +604,7 @@ function objectives.handle_print(text)
                         local state = objective_states[obj_name]
                         if not (state
                             and state.last_action == "destroyed"
-                            and (current_time - state.timestamp) < 1000) then
+                            and (current_time - state.timestamp) < DESTROY_DEDUP_MS) then
                             handle_buildable_destruction(obj_name, normalized)
                         end
                     end
@@ -648,57 +685,85 @@ function objectives.handle_print(text)
             end
         end
 
-        -- Escort objectives
-        if _map_config.escort then
+        -- Escort finale announces → vehicle module (marks finale involvement
+        -- on the per-vehicle escort credit instead of a one-shot proximity stat)
+        if _map_config.escort and vehicle_ref and vehicle_ref.on_escort_finale then
             for escort_name, escort_data in pairs(_map_config.escort) do
-                if escort_data.escort_pattern and escort_data.escort_coordinates
+                if escort_data.escort_pattern and escort_data.escort_pattern ~= ""
                 and string.find(normalized, utils.normalize(escort_data.escort_pattern)) then
-                    local nearest = find_nearest_players(escort_data.escort_coordinates, et.TEAM_ALLIES)
-                    for _, cnum in ipairs(nearest) do
-                        local guid = players_ref.guids[cnum] and players_ref.guids[cnum].guid
-                        if guid then
-                            record_obj_stat(guid, "obj_escort", escort_name)
-                        end
-                    end
+                    vehicle_ref.on_escort_finale(escort_name, escort_data.escort_coordinates)
                     break
                 end
             end
         end
     end
 
-    -- legacy popup: popup state for objective steal / return
+    -- legacy popup: objective steal / return
     if string.find(text, "legacy popup:", 1, true) then
-        local normalized = utils.normalize(utils.strip_colors(text))
+        local normalized = utils.normalize(utils.strip_colors(text)):gsub('"', '')
+
+        local touch_id
+        if pending_flag_touch
+        and (current_time - pending_flag_touch.timestamp) <= FLAG_TOUCH_WINDOW_MS then
+            touch_id = pending_flag_touch.clientNum
+        end
 
         if _map_config.objectives then
             for _, obj in ipairs(_map_config.objectives) do
                 if obj.steal_pattern and obj.steal_pattern ~= ""
-                and string.find(normalized, utils.normalize(obj.steal_pattern)) then
-                    if not objective_states[obj.name] then
-                        objective_states[obj.name] = { last_popup = "", last_announce = "",
-                            last_action = "", timestamp = 0 }
+                and string.find(normalized, (utils.normalize(obj.steal_pattern):gsub('"', ''))) then
+                    local state = objective_states[obj.name]
+                    if not state then
+                        state = { last_announce = "", last_action = "", timestamp = 0 }
+                        objective_states[obj.name] = state
                     end
-                    objective_states[obj.name].last_popup = normalized
-                    objective_states[obj.name].timestamp  = current_time
+
+                    local entry = touch_id and players_ref.guids[touch_id]
+                    if entry and entry.guid and entry.guid ~= "WORLD" then
+                        local event = state.dropped and "obj_repickup" or "obj_taken"
+                        record_obj_stat(entry.guid, event, obj.name)
+                        if _collect_gamelog and gamelog_ref then
+                            gamelog_ref.objective(event, entry.guid, obj.name)
+                        end
+
+                        objective_carriers.players[touch_id] = obj.name
+                        state.carrier_id = touch_id
+                        local found = false
+                        for _, v in ipairs(objective_carriers.ids) do
+                            if v == touch_id then found = true; break end
+                        end
+                        if not found then
+                            table.insert(objective_carriers.ids, touch_id)
+                        end
+                    end
+
+                    state.dropped     = false
+                    state.last_action = "taken"
+                    state.timestamp   = current_time
+                    pending_flag_touch = nil
                     break
 
                 elseif obj.return_pattern and obj.return_pattern ~= ""
-                and string.find(normalized, utils.normalize(obj.return_pattern)) then
-                    local state = objective_states[obj.name]
-                    local returner_guid = state and state.carrier_id
-                        and players_ref.guids[state.carrier_id]
-                        and players_ref.guids[state.carrier_id].guid
-                        or "WORLD"
+                and string.find(normalized, (utils.normalize(obj.return_pattern):gsub('"', ''))) then
+                    local entry = touch_id and players_ref.guids[touch_id]
+                    local returner_guid = entry and entry.guid or "WORLD"
 
                     record_obj_stat(returner_guid, "obj_returned", obj.name)
                     if _collect_gamelog and gamelog_ref then
                         gamelog_ref.objective("obj_returned", returner_guid, obj.name)
                     end
 
-                    if state and state.carrier_id then
-                        objective_carriers.players[state.carrier_id] = nil
-                        state.carrier_id = nil
+                    local state = objective_states[obj.name]
+                    if state then
+                        if state.carrier_id then
+                            objective_carriers.players[state.carrier_id] = nil
+                            state.carrier_id = nil
+                        end
+                        state.dropped     = false
+                        state.last_action = "returned"
+                        state.timestamp   = current_time
                     end
+                    pending_flag_touch = nil
                     break
                 end
             end
@@ -718,6 +783,11 @@ function objectives.handle_print(text)
         if id_str then
             local id    = tonumber(id_str)
             local entry = players_ref.guids[id]
+
+            if vehicle_ref then
+                vehicle_ref.on_repair(id, current_time)
+            end
+
             if entry then
                 local guid         = entry.guid
                 local objective_name = "Unknown Repair"
@@ -753,37 +823,12 @@ function objectives.handle_print(text)
     end
 
     -- Item: <clientNum> team_CTF_redflag / team_CTF_blueflag
+    -- Precedes the steal/return popup; stash the toucher for it to consume.
     if string.find(text, "Item:", 1, true)
     and (string.find(text, "team_CTF_redflag", 1, true) or string.find(text, "team_CTF_blueflag", 1, true)) then
         local id = tonumber(text:match("Item: (%d+)"))
-        if id and _map_config.objectives then
-            for _, obj in ipairs(_map_config.objectives) do
-                local state = objective_states[obj.name]
-                if state and state.last_popup and state.last_popup ~= ""
-                and (current_time - state.timestamp) < 1000 then
-                    local norm_popup = utils.normalize(utils.strip_colors(state.last_popup))
-                    if obj.steal_pattern ~= "" and string.find(norm_popup, utils.normalize(obj.steal_pattern)) then
-                        local entry = players_ref.guids[id]
-                        if entry then
-                            record_obj_stat(entry.guid, "obj_taken", obj.name)
-                            if _collect_gamelog and gamelog_ref then
-                                gamelog_ref.objective("obj_taken", entry.guid, obj.name)
-                            end
-
-                            objective_carriers.players[id] = obj.name
-                            state.carrier_id = id
-                            local found = false
-                            for _, v in ipairs(objective_carriers.ids) do
-                                if v == id then found = true; break end
-                            end
-                            if not found then
-                                table.insert(objective_carriers.ids, id)
-                            end
-                        end
-                        break
-                    end
-                end
-            end
+        if id then
+            pending_flag_touch = { clientNum = id, timestamp = current_time }
         end
     end
 
@@ -831,31 +876,150 @@ function objectives.handle_print(text)
 end
 
 
+
 function objectives.handle_carrier_death(target, attacker, mod, gamelog_module)
     for obj_name, state in pairs(objective_states) do
         if state.carrier_id == target then
             local victim_entry  = players_ref.guids[target]
             local killer_entry  = players_ref.guids[attacker]
+            local victim_guid   = victim_entry and victim_entry.guid or "WORLD"
 
-            local victim_guid = victim_entry  and victim_entry.guid  or "WORLD"
-            local killer_guid = killer_entry  and killer_entry.guid  or "WORLD"
+            local gl = gamelog_module or gamelog_ref
 
-            record_obj_stat(victim_guid, "obj_carrierkilled", obj_name, {
-                guid      = killer_guid,
-                weapon    = mod,
-                objective = obj_name,
-            })
+            if killer_entry and killer_entry.guid and killer_entry.guid ~= "WORLD"
+            and attacker ~= target
+            and victim_entry and killer_entry.team ~= victim_entry.team then
+                record_obj_stat(killer_entry.guid, "obj_carrierkilled", obj_name, {
+                    guid      = victim_guid,
+                    weapon    = mod,
+                    objective = obj_name,
+                })
+                if _collect_gamelog and gl then
+                    gl.obj_carrier_killed(killer_entry.guid, victim_guid, obj_name, mod)
+                end
+            end
 
-            if _collect_gamelog and (gamelog_module or gamelog_ref) then
-                local gl = gamelog_module or gamelog_ref
-                gl.objective("obj_carrierkilled", victim_guid, obj_name)
+            record_obj_stat(victim_guid, "obj_dropped", obj_name)
+            if _collect_gamelog and gl then
+                local pos = et.gentity_get(target, "r.currentOrigin")
+                gl.obj_dropped(victim_guid, obj_name, utils.fmt_pos(pos))
             end
 
             objective_carriers.players[target] = nil
-            state.carrier_id = nil
-            state.last_action = "killed"
+            state.carrier_id  = nil
+            state.dropped     = true
+            state.last_action = "dropped"
+            state.timestamp   = et.trap_Milliseconds()
         end
     end
+end
+
+
+-- Carrier disconnects also drop the objective.
+function objectives.handle_disconnect(clientNum)
+    for obj_name, state in pairs(objective_states) do
+        if state.carrier_id == clientNum then
+            local entry = players_ref.guids[clientNum]
+            local guid  = entry and entry.guid or "WORLD"
+
+            record_obj_stat(guid, "obj_dropped", obj_name)
+            if _collect_gamelog and gamelog_ref then
+                local pos = et.gentity_get(clientNum, "r.currentOrigin")
+                gamelog_ref.obj_dropped(guid, obj_name, utils.fmt_pos(pos))
+            end
+
+            objective_carriers.players[clientNum] = nil
+            state.carrier_id  = nil
+            state.dropped     = true
+            state.last_action = "dropped"
+            state.timestamp   = et.trap_Milliseconds()
+        end
+    end
+end
+
+
+-- Damage to non-client entities, routed from events.on_damage.
+-- Buffered for announce-only destruction attribution (command posts etc.).
+function objectives.on_entity_damage(target, attacker, timestamp)
+    table.insert(recent_entity_damage, 1,
+        { entnum = target, attacker = attacker, timestamp = timestamp })
+    if #recent_entity_damage > ENTITY_DAMAGE_BUFFER then
+        table.remove(recent_entity_damage)
+    end
+end
+
+
+local PW_REDFLAG  = 5
+local PW_BLUEFLAG = 6
+
+-- Manual drops (+dropobj) are completely silent on the console —
+-- Cmd_DropObjective_f emits no log line or popup. Detect them by polling the
+-- carrier's flag powerup: a tracked carrier who is alive but no longer holds
+-- PW_REDFLAG/PW_BLUEFLAG has dropped the objective. Death/return/secure paths
+-- clear the carrier table synchronously (same server frame as their console
+-- lines), so they never reach this check.
+local function check_manual_drops()
+    for clientNum, obj_name in pairs(objective_carriers.players) do
+        local health = tonumber(et.gentity_get(clientNum, "health")) or 0
+        if health > 0 then
+            local red  = tonumber(et.gentity_get(clientNum, "ps.powerups", PW_REDFLAG))  or 0
+            local blue = tonumber(et.gentity_get(clientNum, "ps.powerups", PW_BLUEFLAG)) or 0
+            if red == 0 and blue == 0 then
+                local entry = players_ref.guids[clientNum]
+                local guid  = entry and entry.guid or "WORLD"
+
+                record_obj_stat(guid, "obj_dropped", obj_name)
+                if _collect_gamelog and gamelog_ref then
+                    local pos = et.gentity_get(clientNum, "r.currentOrigin")
+                    gamelog_ref.obj_dropped(guid, obj_name, utils.fmt_pos(pos))
+                end
+
+                objective_carriers.players[clientNum] = nil
+                local state = objective_states[obj_name]
+                if state then
+                    state.carrier_id  = nil
+                    state.dropped     = true
+                    state.last_action = "dropped"
+                    state.timestamp   = et.trap_Milliseconds()
+                end
+            end
+        end
+    end
+end
+
+
+-- Per-frame carrier upkeep: manual-drop detection (always) and carrier
+-- position telemetry (collect_vehicle_telemetry, 1s cadence).
+function objectives.tick(now)
+    if next(objective_carriers.players) == nil then return end
+
+    check_manual_drops()
+
+    if not _collect_telemetry or not _collect_gamelog or not gamelog_ref then return end
+    if (now ~= nil and _last_carrier_pos_ms ~= 0
+        and (now - _last_carrier_pos_ms) < CARRIER_POS_INTERVAL_MS) then
+        return
+    end
+    _last_carrier_pos_ms = now or 0
+
+    for clientNum, obj_name in pairs(objective_carriers.players) do
+        local entry = players_ref.guids[clientNum]
+        if entry and entry.guid and entry.guid ~= "WORLD" then
+            local pos = et.gentity_get(clientNum, "r.currentOrigin")
+            if pos then
+                gamelog_ref.carrier_pos(entry.guid, obj_name, utils.fmt_pos(pos))
+            end
+        end
+    end
+end
+
+
+-- True while clientNum is a tracked objective carrier. Used by events.lua to
+-- correct death snapshots: the engine drops carried items (G_DropItems)
+-- before the obituary hook fires, so the flag powerup is already gone when
+-- the victim snapshot is taken.
+function objectives.is_carrier(clientNum)
+    return objective_carriers.players[clientNum] ~= nil
 end
 
 
@@ -876,6 +1040,9 @@ function objectives.reset()
     objective_states     = {}
     recent_announcements = {}
     pending_pickup       = nil
+    pending_flag_touch   = nil
+    recent_entity_damage = {}
+    _last_carrier_pos_ms = 0
     _map_config          = nil
     _common_buildables   = nil
 end
