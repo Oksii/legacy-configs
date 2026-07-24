@@ -16,6 +16,7 @@ local http_ref
 local api_ref
 local movement_ref
 local objectives_ref
+local vehicle_ref
 local events_ref
 local gamelog_ref
 local players_ref
@@ -45,7 +46,7 @@ local PERS_SCORE        = 0
 function stats.init(cfg, log_ref, http_module, api_module,
                     movement_module, objectives_module,
                     events_module, gamelog_module, players_module, version_str,
-                    scores_module)
+                    scores_module, vehicle_module)
     log            = log_ref
     http_ref       = http_module
     api_ref        = api_module
@@ -55,6 +56,7 @@ function stats.init(cfg, log_ref, http_module, api_module,
     gamelog_ref    = gamelog_module
     players_ref    = players_module
     scores_ref     = scores_module
+    vehicle_ref    = vehicle_module
 
     _api_token          = cfg.api_token             or ""
     _url_submit         = cfg.api_url_submit        or ""
@@ -116,12 +118,16 @@ function stats.store(maxClients)
                 end
             end
 
-            if dwWeaponMask ~= 0 then
+            local team = et.gentity_get(i, "sess.sessionTeam")
+
+            -- Record every team player, weapon interactions or not — objective
+            -- runners (escort, courier) can finish a round without a single
+            -- tracked shot and must still get a player_stats row.
+            if dwWeaponMask ~= 0 or team == 1 or team == 2 then
                 local userinfo      = et.trap_GetUserinfo(i)
                 local guid          = string.upper(et.Info_ValueForKey(userinfo, "cl_guid"))
                 local name          = et.gentity_get(i, "pers.netname")
                 local rounds        = et.gentity_get(i, "sess.rounds")
-                local team          = et.gentity_get(i, "sess.sessionTeam")
 
                 local dmg_given     = et.gentity_get(i, "sess.damage_given")
                 local dmg_recv      = et.gentity_get(i, "sess.damage_received")
@@ -200,6 +206,7 @@ function stats.save(round_start_time, round_end_time, round_start_unix, round_en
     local metadata = scores_ref and scores_ref.get_metadata(round_info) or nil
 
     local player_stats = {}
+    local vehicle_stats = vehicle_ref and vehicle_ref.get_stats() or nil
 
     for guid, row_str in pairs(_weapon_stats) do
         local parts = {}
@@ -274,6 +281,10 @@ function stats.save(round_start_time, round_end_time, round_start_unix, round_en
                     end
                 end
             end
+        end
+
+        if vehicle_stats and vehicle_stats[guid] then
+            player_stats[guid].obj_vehicle = vehicle_stats[guid]
         end
 
     end

@@ -68,15 +68,32 @@ Keyed by GUID. Each entry includes:
 | `obj_defused` | object | Same |
 | `obj_destroyed` | object | Same |
 | `obj_repaired` | object | Same |
-| `obj_taken` | object | Same |
+| `obj_taken` | object | Same — initial steal from the objective's stand |
+| `obj_repickup` | object | Same — re-pickup of a dropped objective (distinct from the initial steal) |
+| `obj_dropped` | object | Same — carrier died, disconnected, or dropped manually (`+dropobj`) while holding the objective |
 | `obj_secured` | object | Same |
 | `obj_returned` | object | Same |
-| `obj_carrierkilled` | object | `{ leveltime: { victim, weapon, objective, timestamp_unix } }` |
+| `obj_carrierkilled` | object | `{ leveltime: { victim, weapon, objective, timestamp_unix } }` — credited to the **killer** of an enemy objective carrier; `victim` is the carrier's GUID. Selfkills/teamkills/world deaths never produce this (the carrier's side is `obj_dropped`). |
 | `obj_flagcaptured` | object | `{ leveltime: { objective, timestamp_unix } }` |
 | `obj_misc` | object | Same |
-| `obj_escort` | object | Same |
 | `shoves_given` | object | `{ leveltime: { objective (target GUID), timestamp_unix } }` |
 | `shoves_received` | object | Same |
+| `obj_vehicle` | object | `COLLECT_VEHICLE_STATS` per-player vehicle stats (see below) |
+
+> **Deprecation notice:** `obj_escort` (one-shot proximity attribution at the map's escort
+> announce) was removed in 2.7.0. Its replacement is `obj_vehicle.escort` — cumulative
+> per-vehicle time/distance — which tells the whole story instead of a single snapshot.
+> The point-in-time facts moved to the gamelog: `vehicle_started.escorts` = who was there
+> for the steal, `vehicle_finale.escorts` = who was at the delivery. Parsers reading
+> `obj_escort` will simply stop seeing the key.
+
+**`obj_vehicle` fields** (each key optional — only present when earned):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `escort` | object | Per-vehicle map: `{ [vehicle]: { time_s, distance } }` — seconds and game units accrued while alive, on the escorting team, within the escort radius (default 500u) of that vehicle **while it was moving**; accrual keeps accumulating across damage/repair/stop cycles. |
+| `damage` | object | `{ damage, hits }` — damage dealt to escort vehicles (`COLLECT_VEHICLE_DAMAGE` only) |
+| `repairs` | number | Vehicle repairs completed (`COLLECT_VEHICLE_DAMAGE` only) |
 
 **`stance_stats_seconds` fields:**
 
@@ -158,7 +175,7 @@ Ordered array of all events that occurred during the round. Every entry has:
 | `round_id` | number | Round number (injected at save time) |
 | `unixtime` | number | Wall-clock timestamp in **milliseconds** when the event was recorded. |
 | `leveltime` | number | Server level time (ms) when the event was recorded. Raw as emitted — see the pause note below. |
-| `group` | string | `"player"` or `"server"` |
+| `group` | string | `"player"`, `"server"` or `"vehicle"` |
 | `label` | string | Event type (see below) |
 | ...fields | — | Event-specific fields |
 
@@ -284,12 +301,79 @@ Ordered array of all events that occurred during the round. Every entry has:
 | `vsay_text` | Custom text for vsay commands with extra args (optional) |
 
 **Objective events** — `obj_planted`, `obj_defused`, `obj_destroyed`, `obj_repaired`,
-`obj_taken`, `obj_secured`, `obj_returned`, `obj_carrierkilled`
+`obj_taken`, `obj_repickup`, `obj_secured`, `obj_returned`
 
 | Field | Description |
 |-------|-------------|
 | `player` | GUID |
 | `objective` | Objective name from config |
+
+**`obj_carrierkilled`** — killed an enemy objective carrier (killer-credited; never
+emitted for selfkills, teamkills, or world deaths)
+
+| Field | Description |
+|-------|-------------|
+| `player` | Killer GUID |
+| `victim` | Carrier GUID |
+| `objective` | Objective the victim was carrying |
+| `weapon` | meansOfDeath |
+
+Attribution comes from the engine console lines directly (`Item:` line preceding the
+steal/return popup, `Objective_Destroyed: <clientNum>`, `Repair: <clientNum>`); announce-only
+destructions (e.g. command posts) are attributed via the most recent `et_Damage` hit on the
+entity. `obj_taken` is the initial steal from the stand; `obj_repickup` is a pickup of a
+dropped objective.
+
+**`obj_dropped`** — carrier lost the objective without securing/returning it: death,
+disconnect, or a manual `+dropobj`. Manual drops emit no console line at all — they are
+detected by polling the carrier's flag powerup (`PW_REDFLAG`/`PW_BLUEFLAG`) each frame.
+
+| Field | Description |
+|-------|-------------|
+| `player` | GUID of the carrier who dropped it |
+| `objective` | Objective name from config |
+| `pos` | `"x y z"` drop position (absent if unresolvable) |
+
+**Vehicle events** (`group: "vehicle"`) — emitted by entity-state tracking of escort
+vehicles (script_movers), enabled by `COLLECT_VEHICLE_STATS`. All carry a `vehicle` field
+(the entity's scriptName, e.g. `"tank"`).
+
+| Label | Extra fields | Description |
+|-------|--------------|-------------|
+| `vehicle_started` | `pos`, `escorts?` | Vehicle moved for the first time this round — `escorts` = who was there for the steal |
+| `vehicle_moving` | `pos`, `escorts?` | Vehicle resumed moving after a stop |
+| `vehicle_stopped` | `pos`, `segment_distance`, `escorts?` | No displacement for >1s; distance of the completed segment |
+| `vehicle_damaged` | `player?`, `pos` | Health hit 0 (disabled); `player` = last damager if attributable |
+| `vehicle_repaired` | `player?`, `pos` | Health restored; `player` = repairing engineer via `Repair:` line |
+| `vehicle_pos` | `pos`, `escorts?` | 1s position sample while moving (`COLLECT_VEHICLE_TELEMETRY` only) |
+| `vehicle_damage` | `player`, `damage` | Per-hit vehicle damage, clamped to the vehicle's remaining health (`COLLECT_VEHICLE_DAMAGE` only) |
+| `vehicle_finale` | `pos`, `escorts?` | The map's escort announce fired (destination reached); `escorts` = owning-team players at the destination |
+| `vehicle_summary` | `total_distance`, `moving_time_s`, `damaged_count`, `repaired_count` | One per vehicle that entered play, at round end |
+
+`escorts` is the array of player GUIDs accruing escort credit at that moment (alive,
+escorting team, within the escort radius while the vehicle moves); omitted when empty.
+
+**`obj_damage`** — damage to a non-vehicle damageable objective (command post, breach walls,
+barriers); `COLLECT_VEHICLE_DAMAGE` only. Restricted to `ET_CONSTRUCTIBLE` entities — the
+engine fires the damage hook for every damageable entity, so corpse gib damage (`ET_CORPSE`)
+and decorative breakables (`func_explosive`, `props_*` chairs/windows/paintings) are filtered
+out here rather than polluting the stream. `damage` is clamped to the objective's remaining
+health so an overkill (e.g. an airstrike on a near-dead wall) reports only the fraction that
+landed. Trucks never emit these: they are not damageable (`takedamage 0`).
+
+| Field | Description |
+|-------|-------------|
+| `player` | Attacker GUID |
+| `damage` | Damage dealt, clamped to the objective's remaining health |
+| `target` | Entity name (objective `track`, falling back to scriptName/classname) |
+
+**`carrier_pos`** — objective-carrier position sample (`COLLECT_VEHICLE_TELEMETRY` only)
+
+| Field | Description |
+|-------|-------------|
+| `player` | Carrier GUID |
+| `objective` | Objective being carried |
+| `pos` | `"x y z"`, sampled every 1s while carrying |
 
 **`obj_flag_captured`**
 
@@ -433,7 +517,8 @@ interface ObjStatEntry {
   timestamp_unix: UnixTime;
 }
 
-/** Carrier-kill entry — keyed by leveltime (as string). */
+/** Carrier-kill entry — keyed by leveltime (as string).
+ *  Recorded under the KILLER's guid; victim is the carrier they killed. */
 interface ObjCarrierKilledEntry {
   victim:         Guid;
   weapon:         number;
@@ -467,16 +552,35 @@ interface PlayerStat {
   obj_destroyed?:     ObjStatMap;
   obj_repaired?:      ObjStatMap;
   obj_taken?:         ObjStatMap;
+  obj_repickup?:      ObjStatMap;
+  obj_dropped?:       ObjStatMap;
   obj_secured?:       ObjStatMap;
   obj_returned?:      ObjStatMap;
-  obj_carrierkilled?: ObjCarrierKilledMap;
+  obj_carrierkilled?: ObjCarrierKilledMap;  // killer-credited (see entry type)
   obj_flagcaptured?:  ObjStatMap;
   obj_misc?:          ObjStatMap;
-  obj_escort?:        ObjStatMap;
 
   // COLLECT_SHOVE_STATS — objective field contains the other player's GUID
   shoves_given?:    ObjStatMap;
   shoves_received?: ObjStatMap;
+
+  // COLLECT_VEHICLE_STATS
+  obj_vehicle?: PlayerVehicleStats;
+
+  /** @deprecated removed in 2.7.0 — superseded by obj_vehicle.escort (per-vehicle
+   *  time/distance + finale). Never present in 2.7.0+ payloads. */
+  obj_escort?: ObjStatMap;
+}
+
+interface PlayerVehicleEscort {
+  time_s:   number;   // accrued while that vehicle moved
+  distance: number;
+}
+
+interface PlayerVehicleStats {
+  escort?:  Record<string, PlayerVehicleEscort>;  // keyed by vehicle scriptName
+  damage?:  { damage: number; hits: number };     // COLLECT_VEHICLE_DAMAGE only
+  repairs?: number;                               // COLLECT_VEHICLE_DAMAGE only
 }
 
 type PlayerStats = Record<Guid, PlayerStat>;
@@ -488,7 +592,7 @@ interface GamelogEventBase {
   round_id:  number;
   unixtime:  number;     // wall-clock ms since Unix epoch (raw; includes pause time)
   leveltime: LevelTime;  // server ms since map load (raw; paused time removed in ingest)
-  group:     "player" | "server";
+  group:     "player" | "server" | "vehicle";
   label:     string;
 }
 
@@ -604,7 +708,7 @@ interface MessageEvent extends GamelogEventBase {
 }
 
 type ObjectiveLabel = "obj_planted" | "obj_defused" | "obj_destroyed" | "obj_repaired"
-                    | "obj_taken"   | "obj_secured" | "obj_returned"  | "obj_carrierkilled";
+                    | "obj_taken"   | "obj_repickup" | "obj_secured" | "obj_returned";
 
 interface ObjectiveEvent extends GamelogEventBase {
   group:     "player";
@@ -612,6 +716,71 @@ interface ObjectiveEvent extends GamelogEventBase {
   player:    Guid;
   objective: string;
 }
+
+// Killed an enemy objective carrier — killer-credited
+interface ObjCarrierKilledEvent extends GamelogEventBase {
+  group:     "player";
+  label:     "obj_carrierkilled";
+  player:    Guid;    // killer
+  victim:    Guid;    // carrier
+  objective: string;
+  weapon:    number;
+}
+
+interface ObjDroppedEvent extends GamelogEventBase {
+  group:     "player";
+  label:     "obj_dropped";
+  player:    Guid;
+  objective: string;
+  pos:       Position | null;
+}
+
+interface CarrierPosEvent extends GamelogEventBase {  // COLLECT_VEHICLE_TELEMETRY
+  group:     "player";
+  label:     "carrier_pos";
+  player:    Guid;
+  objective: string;
+  pos:       Position;
+}
+
+// ─── vehicle events (COLLECT_VEHICLE_STATS) ────────────────────────────────
+
+interface VehicleEventBase extends GamelogEventBase {
+  group:   "vehicle";
+  vehicle: string;  // entity scriptName, e.g. "tank"
+}
+
+// escorts: GUIDs accruing escort credit at that moment; omitted when empty
+interface VehicleStartedEvent  extends VehicleEventBase { label: "vehicle_started";  pos: Position; escorts?: Guid[]; }
+interface VehicleMovingEvent   extends VehicleEventBase { label: "vehicle_moving";   pos: Position; escorts?: Guid[]; }
+interface VehicleStoppedEvent  extends VehicleEventBase { label: "vehicle_stopped";  pos: Position; segment_distance: number; escorts?: Guid[]; }
+interface VehicleDamagedEvent  extends VehicleEventBase { label: "vehicle_damaged";  pos: Position; player?: Guid; }
+interface VehicleRepairedEvent extends VehicleEventBase { label: "vehicle_repaired"; pos: Position; player?: Guid; }
+interface VehiclePosEvent      extends VehicleEventBase { label: "vehicle_pos";      pos: Position; escorts?: Guid[]; }  // COLLECT_VEHICLE_TELEMETRY
+interface VehicleDamageEvent   extends VehicleEventBase { label: "vehicle_damage";   player: Guid; damage: number; }  // COLLECT_VEHICLE_DAMAGE
+interface VehicleFinaleEvent   extends VehicleEventBase { label: "vehicle_finale";   pos: Position; escorts?: Guid[]; }
+
+// COLLECT_VEHICLE_DAMAGE: damage to ET_CONSTRUCTIBLE objectives (CP, breach
+// walls, barriers). Corpses and decorative breakables are filtered out.
+interface ObjDamageEvent extends GamelogEventBase {
+  group:  "player";
+  label:  "obj_damage";
+  player: Guid;
+  damage: number;  // clamped to the objective's remaining health
+  target: string;  // objective track name, falling back to scriptName/classname
+}
+interface VehicleSummaryEvent  extends VehicleEventBase {
+  label:          "vehicle_summary";
+  total_distance: number;
+  moving_time_s:  number;
+  damaged_count:  number;
+  repaired_count: number;
+}
+
+type VehicleEvent =
+  | VehicleStartedEvent | VehicleMovingEvent | VehicleStoppedEvent
+  | VehicleDamagedEvent | VehicleRepairedEvent | VehiclePosEvent
+  | VehicleDamageEvent | VehicleFinaleEvent | VehicleSummaryEvent;
 
 interface FlagCapturedEvent extends GamelogEventBase {
   group:  "player";
@@ -662,8 +831,9 @@ interface UnpauseEvent    extends GamelogEventBase { group: "server"; label: "un
 type GamelogEvent =
   | SpawnEvent | KillEvent | SuicideEvent | TeamkillEvent | DamageEvent
   | ReviveEvent | ClassChangeEvent | MessageEvent
-  | ObjectiveEvent | FlagCapturedEvent | PickupEvent | ShoveEvent
-  | WeaponFireEvent
+  | ObjectiveEvent | ObjCarrierKilledEvent | ObjDroppedEvent | ObjDamageEvent
+  | FlagCapturedEvent | PickupEvent | ShoveEvent
+  | WeaponFireEvent | CarrierPosEvent | VehicleEvent
   | RoundStartEvent | RoundEndEvent | PauseEvent | UnpauseEvent;
 
 // ─── metadata ──────────────────────────────────────────────────────────────
@@ -757,6 +927,9 @@ The match-ID endpoint is called as `GET {API_URL_MATCHID}/{server_ip}/{server_po
 | `COLLECT_SHOVE_STATS` | `true` | Shove tracking in `player_stats` and `gamelog` |
 | `COLLECT_MOVEMENT_STATS` | `true` | Distance travelled and speed in `player_stats` |
 | `COLLECT_STANCE_STATS` | `true` | Stance-time breakdown in `player_stats` |
+| `COLLECT_VEHICLE_STATS` | `true` | Entity-state escort vehicle tracking: per-player escort credit (`player_stats.obj_vehicle.escort`) and `vehicle_*` timeline events in `gamelog`. Active only on maps with an `escort` config section — its entry names (or `script_name` keys) pin the vehicle script_movers; maps without one have no vehicle and are skipped entirely. |
+| `COLLECT_VEHICLE_TELEMETRY` | `true` | 1-second position samples for moving vehicles (`vehicle_pos`) and objective carriers (`carrier_pos`), enabling route replay. Modest volume (~200 events per escort round). |
+| `COLLECT_VEHICLE_DAMAGE` | `true` | Per-player damage tracking for damageable objectives: `vehicle_damage` events + `player_stats.obj_vehicle.damage` / `.repairs` for vehicles, and `obj_damage` events for `ET_CONSTRUCTIBLE` objectives (command posts, breach walls, barriers). Corpse gibs and decorative breakables are filtered out; damage is clamped to remaining health. Trucks are not damageable and never emit these. |
 
 ### [OUTPUT]
 
@@ -842,6 +1015,9 @@ silently ignored and the defaults above apply.
 | `STATS_API_SHOVESTATS` | `COLLECT_SHOVE_STATS` |
 | `STATS_API_MOVEMENTSTATS` | `COLLECT_MOVEMENT_STATS` |
 | `STATS_API_STANCESTATS` | `COLLECT_STANCE_STATS` |
+| `STATS_API_VEHICLESTATS` | `COLLECT_VEHICLE_STATS` |
+| `STATS_API_VEHICLE_TELEMETRY` | `COLLECT_VEHICLE_TELEMETRY` |
+| `STATS_API_VEHICLE_DAMAGE` | `COLLECT_VEHICLE_DAMAGE` |
 | `STATS_API_WEAPON_FIRE` | `COLLECT_WEAPON_FIRE` |
 | `STATS_API_DUMPJSON` | `DUMP_STATS_DATA` |
 | `STATS_SUBMIT` | `SUBMIT_TO_API` |
@@ -894,7 +1070,8 @@ Each map is declared under `[maps.<mapname>]`. Supported sub-sections:
 | `buildables.<name>` | `enabled = true` | Marks a common buildable as present on this map |
 | `flags.<name>` | `flag_pattern`, `flag_coordinates` | Checkpoint / flag capture attribution |
 | `misc.<name>` | `misc_pattern`, `misc_coordinates` | Coordinate-based misc objective |
-| `escort.<name>` | `escort_pattern`, `escort_coordinates` | Coordinate-based vehicle escort event |
+| `escort.<name>` | `escort_pattern`, `escort_coordinates` | Escort finale detection: when the announce matching `escort_pattern` fires, a `vehicle_finale` event is emitted listing the owning-team players within the escort radius of `escort_coordinates` (falling back to the vehicle's position) |
+| `escort.<name>` | `script_name`, `team`, `radius` | Entity-state vehicle tracking (the presence of an `escort` section enables it for the map). The vehicle script_mover is pinned by `script_name`, or by `<name>` itself when omitted (`escort.tank` → scriptName `tank`). Optional: escorting `team` (defaults to `"allies"` — attackers own escort objectives on every map in rotation; set `"axis"` for the rare inverted map) and escort `radius` (default 500 units) |
 
 ---
 
@@ -1011,6 +1188,12 @@ Both must be available to the ETLegacy Lua runtime (present in `lualibs/`):
 luascripts/
 ├── stats.lua                   ← entry point + configuration
 ├── config.toml                 ← map patterns only
+├── test/                       ← dev tooling, never loaded by stats.lua
+│   ├── entdump.lua             on-server diagnostic: dumps mover/checkpoint/constructible
+│   │                           entities to <fs_homepath>/legacy/entdump.log (load via lua_modules)
+│   ├── et_stub.lua             offline `et` API stub for the tests below
+│   ├── vehicle_test.lua        offline unit test:  lua5.4 luascripts/test/vehicle_test.lua
+│   └── replay.lua              offline regression: lua5.4 luascripts/test/replay.lua <console.log>
 └── stats/
     ├── util/
     │   ├── log.lua             timestamped file logger (info / debug levels)
@@ -1022,6 +1205,7 @@ luascripts/
     ├── gamelog.lua             in-memory event buffer
     ├── events.lua              et_Obituary, et_Damage, et_ClientCommand
     ├── objectives.lua          et_Print pattern matching, buildables, flags, shoves
+    ├── vehicle.lua             entity-state escort vehicle tracking (auto-detect, escort credit, timeline)
     ├── gather.lua              gather features: auto_rename, auto_sort, auto_start, auto_scores
     ├── api.lua                 match-ID fetch, version check
     ├── scores.lua              match score tracking (gather + ng modes)
