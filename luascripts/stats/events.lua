@@ -15,6 +15,9 @@ local objectives_ref
 local vehicle_ref
 
 local MAX_CLIENT_SLOTS = 64  -- entity numbers below this are always clients
+local ET_CONSTRUCTIBLE = 33  -- entityType_t: engineer build/destroy objectives
+                             -- (CP, breach walls, barriers). Not exposed as an
+                             -- et.* constant, so matched numerically.
 
 local _collect_gamelog      = true
 local _collect_weapon_fire  = false
@@ -198,22 +201,39 @@ end
 
 
 function events.on_damage(target, attacker, damage, damage_flags, mod)
-    -- Non-client target: escort vehicle or other damageable map entity
-    -- (constructible, command post, ...). et_Damage fires for these too, and
-    -- only for hits that pass the engine's weapon-class gate for the entity.
+    -- Non-client target: escort vehicle or a damageable objective. et_Damage
+    -- fires for every damageable entity — corpse gibs (ET_CORPSE),
+    -- func_explosive breakables and decorative props (chairs, windows,
+    -- paintings) all reach here — so past the vehicle hand-off we keep only
+    -- ET_CONSTRUCTIBLE (command posts, breach walls, barriers) and drop the rest.
     if type(target) == "number" and target >= MAX_CLIENT_SLOTS then
         local now = et.trap_Milliseconds()
-        local handled = vehicle_ref and vehicle_ref.on_damage(target, attacker, damage, now)
-        if not handled and objectives_ref and objectives_ref.on_entity_damage then
-            objectives_ref.on_entity_damage(target, attacker, now)
+        if vehicle_ref and vehicle_ref.on_damage(target, attacker, damage, now) then
+            return
+        end
 
-            if _collect_obj_damage and _collect_gamelog and gamelog_ref then
-                local entry = players_ref.guids[attacker]
-                if entry and entry.guid and entry.guid ~= "WORLD" then
+        if (tonumber(et.gentity_get(target, "s.eType")) or -1) ~= ET_CONSTRUCTIBLE then
+            return
+        end
+
+        if objectives_ref and objectives_ref.on_entity_damage then
+            objectives_ref.on_entity_damage(target, attacker, now)
+        end
+
+        if _collect_obj_damage and _collect_gamelog and gamelog_ref then
+            local entry = players_ref.guids[attacker]
+            if entry and entry.guid and entry.guid ~= "WORLD" then
+                -- Clamp to remaining health: the engine passes raw damage and
+                -- subtracts health only after this hook, so an airstrike
+                -- overkilling a near-dead objective would otherwise report its
+                -- full amount instead of the fraction that mattered.
+                local hp  = tonumber(et.gentity_get(target, "health")) or 0
+                local eff = math.min(damage or 0, math.max(0, hp))
+                if eff > 0 then
                     local name = et.gentity_get(target, "track")
                     if not name or name == "" then name = et.gentity_get(target, "scriptName") end
                     if not name or name == "" then name = et.gentity_get(target, "classname") end
-                    gamelog_ref.obj_damage(entry.guid, damage or 0, name or "unknown")
+                    gamelog_ref.obj_damage(entry.guid, eff, name or "unknown")
                 end
             end
         end

@@ -329,14 +329,22 @@ function vehicle.on_damage(target, attacker, damage, now)
     if _collect_damage then
         local guid = guid_of(attacker)
         if guid then
-            local tally = damage_tally[guid]
-            if not tally then
-                tally = { damage = 0, hits = 0 }
-                damage_tally[guid] = tally
+            -- Clamp to the vehicle's remaining health: the engine passes raw
+            -- damage and subtracts health only after the hook, so a panzer or
+            -- airstrike overkilling a near-dead tank would otherwise report its
+            -- full amount rather than the fraction that disabled it.
+            local hp  = tonumber(et.gentity_get(target, "health")) or 0
+            local eff = math.min(damage or 0, math.max(0, hp))
+            if eff > 0 then
+                local tally = damage_tally[guid]
+                if not tally then
+                    tally = { damage = 0, hits = 0 }
+                    damage_tally[guid] = tally
+                end
+                tally.damage = tally.damage + eff
+                tally.hits   = tally.hits + 1
+                emit("vehicle_damage", cand, { player = guid, damage = eff })
             end
-            tally.damage = tally.damage + (damage or 0)
-            tally.hits   = tally.hits + 1
-            emit("vehicle_damage", cand, { player = guid, damage = damage or 0 })
         end
     end
     return true

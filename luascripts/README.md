@@ -346,22 +346,25 @@ vehicles (script_movers), enabled by `COLLECT_VEHICLE_STATS`. All carry a `vehic
 | `vehicle_damaged` | `player?`, `pos` | Health hit 0 (disabled); `player` = last damager if attributable |
 | `vehicle_repaired` | `player?`, `pos` | Health restored; `player` = repairing engineer via `Repair:` line |
 | `vehicle_pos` | `pos`, `escorts?` | 1s position sample while moving (`COLLECT_VEHICLE_TELEMETRY` only) |
-| `vehicle_damage` | `player`, `damage` | Per-hit vehicle damage (`COLLECT_VEHICLE_DAMAGE` only) |
+| `vehicle_damage` | `player`, `damage` | Per-hit vehicle damage, clamped to the vehicle's remaining health (`COLLECT_VEHICLE_DAMAGE` only) |
 | `vehicle_finale` | `pos`, `escorts?` | The map's escort announce fired (destination reached); `escorts` = owning-team players at the destination |
 | `vehicle_summary` | `total_distance`, `moving_time_s`, `damaged_count`, `repaired_count` | One per vehicle that entered play, at round end |
 
 `escorts` is the array of player GUIDs accruing escort credit at that moment (alive,
 escorting team, within the escort radius while the vehicle moves); omitted when empty.
 
-**`obj_damage`** — damage to a non-vehicle damageable objective (command post, destroyable
-walls); `COLLECT_VEHICLE_DAMAGE` only. Trucks never emit damage events — they are not
-damageable (`takedamage 0`), so the engine never fires the damage hook for them. Only hits
-that pass the engine's per-entity weapon-class gate arrive here, so volume is low.
+**`obj_damage`** — damage to a non-vehicle damageable objective (command post, breach walls,
+barriers); `COLLECT_VEHICLE_DAMAGE` only. Restricted to `ET_CONSTRUCTIBLE` entities — the
+engine fires the damage hook for every damageable entity, so corpse gib damage (`ET_CORPSE`)
+and decorative breakables (`func_explosive`, `props_*` chairs/windows/paintings) are filtered
+out here rather than polluting the stream. `damage` is clamped to the objective's remaining
+health so an overkill (e.g. an airstrike on a near-dead wall) reports only the fraction that
+landed. Trucks never emit these: they are not damageable (`takedamage 0`).
 
 | Field | Description |
 |-------|-------------|
 | `player` | Attacker GUID |
-| `damage` | Damage amount |
+| `damage` | Damage dealt, clamped to the objective's remaining health |
 | `target` | Entity name (objective `track`, falling back to scriptName/classname) |
 
 **`carrier_pos`** — objective-carrier position sample (`COLLECT_VEHICLE_TELEMETRY` only)
@@ -757,12 +760,13 @@ interface VehiclePosEvent      extends VehicleEventBase { label: "vehicle_pos"; 
 interface VehicleDamageEvent   extends VehicleEventBase { label: "vehicle_damage";   player: Guid; damage: number; }  // COLLECT_VEHICLE_DAMAGE
 interface VehicleFinaleEvent   extends VehicleEventBase { label: "vehicle_finale";   pos: Position; escorts?: Guid[]; }
 
-// COLLECT_VEHICLE_DAMAGE: damage to non-vehicle damageable objectives (CP, walls)
+// COLLECT_VEHICLE_DAMAGE: damage to ET_CONSTRUCTIBLE objectives (CP, breach
+// walls, barriers). Corpses and decorative breakables are filtered out.
 interface ObjDamageEvent extends GamelogEventBase {
   group:  "player";
   label:  "obj_damage";
   player: Guid;
-  damage: number;
+  damage: number;  // clamped to the objective's remaining health
   target: string;  // objective track name, falling back to scriptName/classname
 }
 interface VehicleSummaryEvent  extends VehicleEventBase {
@@ -925,7 +929,7 @@ The match-ID endpoint is called as `GET {API_URL_MATCHID}/{server_ip}/{server_po
 | `COLLECT_STANCE_STATS` | `true` | Stance-time breakdown in `player_stats` |
 | `COLLECT_VEHICLE_STATS` | `true` | Entity-state escort vehicle tracking: per-player escort credit (`player_stats.obj_vehicle.escort`) and `vehicle_*` timeline events in `gamelog`. Active only on maps with an `escort` config section — its entry names (or `script_name` keys) pin the vehicle script_movers; maps without one have no vehicle and are skipped entirely. |
 | `COLLECT_VEHICLE_TELEMETRY` | `true` | 1-second position samples for moving vehicles (`vehicle_pos`) and objective carriers (`carrier_pos`), enabling route replay. Modest volume (~200 events per escort round). |
-| `COLLECT_VEHICLE_DAMAGE` | `true` | Per-player damage tracking for damageable objectives: `vehicle_damage` events + `player_stats.obj_vehicle.damage` / `.repairs` for vehicles, and `obj_damage` events for constructibles (command posts, destroyable walls). Trucks are not damageable and never emit these. |
+| `COLLECT_VEHICLE_DAMAGE` | `true` | Per-player damage tracking for damageable objectives: `vehicle_damage` events + `player_stats.obj_vehicle.damage` / `.repairs` for vehicles, and `obj_damage` events for `ET_CONSTRUCTIBLE` objectives (command posts, breach walls, barriers). Corpse gibs and decorative breakables are filtered out; damage is clamped to remaining health. Trucks are not damageable and never emit these. |
 
 ### [OUTPUT]
 
