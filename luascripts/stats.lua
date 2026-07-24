@@ -29,8 +29,8 @@ local COLLECT_MOVEMENT_STATS    = true
 local COLLECT_STANCE_STATS      = true   -- prone / crouch / sprint time, etc.
 local COLLECT_GAMELOG           = true   -- in-round event timeline (kills, damage, chat, objectives, etc.)
 local COLLECT_VEHICLE_STATS     = true   -- escort vehicle tracking: per-player escort credit + timeline events
-local COLLECT_VEHICLE_TELEMETRY = false  -- 1s position samples for vehicle + objective carriers (higher volume)
-local COLLECT_VEHICLE_DAMAGE    = false  -- per-player vehicle damage/repair tally events
+local COLLECT_VEHICLE_TELEMETRY = true   -- 1s position samples for vehicle + objective carriers (~200 events/round)
+local COLLECT_VEHICLE_DAMAGE    = true   -- per-player vehicle/objective damage + repair tally events
 local COLLECT_WEAPON_FIRE       = false  -- log every weapon shot (et_WeaponFire + et_FixedMGFire)
                                          -- WARNING: very high volume -- not recommended for normal use.
 

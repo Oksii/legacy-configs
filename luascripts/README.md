@@ -924,8 +924,8 @@ The match-ID endpoint is called as `GET {API_URL_MATCHID}/{server_ip}/{server_po
 | `COLLECT_MOVEMENT_STATS` | `true` | Distance travelled and speed in `player_stats` |
 | `COLLECT_STANCE_STATS` | `true` | Stance-time breakdown in `player_stats` |
 | `COLLECT_VEHICLE_STATS` | `true` | Entity-state escort vehicle tracking: per-player escort credit (`player_stats.obj_vehicle.escort`) and `vehicle_*` timeline events in `gamelog`. Active only on maps with an `escort` config section — its entry names (or `script_name` keys) pin the vehicle script_movers; maps without one have no vehicle and are skipped entirely. |
-| `COLLECT_VEHICLE_TELEMETRY` | `false` | 1-second position samples for moving vehicles (`vehicle_pos`) and objective carriers (`carrier_pos`). Higher volume — enable when route replay is wanted. |
-| `COLLECT_VEHICLE_DAMAGE` | `false` | Per-player damage tracking for damageable objectives: `vehicle_damage` events + `player_stats.obj_vehicle.damage` / `.repairs` for vehicles, and `obj_damage` events for constructibles (command posts, destroyable walls). Trucks are not damageable and never emit these. |
+| `COLLECT_VEHICLE_TELEMETRY` | `true` | 1-second position samples for moving vehicles (`vehicle_pos`) and objective carriers (`carrier_pos`), enabling route replay. Modest volume (~200 events per escort round). |
+| `COLLECT_VEHICLE_DAMAGE` | `true` | Per-player damage tracking for damageable objectives: `vehicle_damage` events + `player_stats.obj_vehicle.damage` / `.repairs` for vehicles, and `obj_damage` events for constructibles (command posts, destroyable walls). Trucks are not damageable and never emit these. |
 
 ### [OUTPUT]
 
