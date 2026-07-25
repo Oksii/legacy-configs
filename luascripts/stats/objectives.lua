@@ -29,8 +29,7 @@ local _maxClients           = 24
 objectives.objstats         = {}
 
 -- objective_carriers.players[clientNum] = obj_name
--- objective_carriers.ids = [ clientNum, ... ]
-local objective_carriers    = { players = {}, ids = {} }
+local objective_carriers    = { players = {} }
 
 -- objective_states[obj_name] = {
 --   last_announce, last_action, timestamp, carrier_id, dropped
@@ -761,13 +760,6 @@ function objectives.handle_print(text)
 
                         objective_carriers.players[touch_id] = obj.name
                         state.carrier_id = touch_id
-                        local found = false
-                        for _, v in ipairs(objective_carriers.ids) do
-                            if v == touch_id then found = true; break end
-                        end
-                        if not found then
-                            table.insert(objective_carriers.ids, touch_id)
-                        end
                     end
 
                     state.dropped     = false
@@ -899,14 +891,14 @@ function objectives.handle_print(text)
                             end
 
                             objective_carriers.players[carrier_id] = nil
-                            for i, v in ipairs(objective_carriers.ids) do
-                                if v == carrier_id then
-                                    table.remove(objective_carriers.ids, i)
-                                    break
-                                end
-                            end
 
                             update_objective_state(obj.name, "secured")
+
+                            local secured_state = objective_states[obj.name]
+                            if secured_state then
+                                secured_state.carrier_id = nil
+                                secured_state.dropped    = false
+                            end
                             break
                         end
                     end
@@ -1099,7 +1091,7 @@ end
 function objectives.reset()
     flush_pending_pickup()
     objectives.objstats  = {}
-    objective_carriers   = { players = {}, ids = {} }
+    objective_carriers   = { players = {} }
     objective_states     = {}
     recent_announcements = {}
     pending_pickup       = nil
