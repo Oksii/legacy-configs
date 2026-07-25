@@ -26,13 +26,13 @@ function gamelog.init(enabled)
 end
 
 
--- gamelog.record(label, group, fields)
+-- gamelog.record(label, group, fields, leveltime)
 -- leveltime/unixtime are raw (paused time is removed downstream in ingest using the
 -- pause/unpause markers -- see gamelog.pause_start/pause_end).
-function gamelog.record(label, group, fields)
+function gamelog.record(label, group, fields, leveltime)
     if not _enabled then return end
 
-    local lt = et.trap_Milliseconds()
+    local lt = leveltime or et.trap_Milliseconds()
     local ev = {
         unixtime  = _round_start_unix_ms + (lt - _round_start_leveltime),
         leveltime = lt,
@@ -154,11 +154,14 @@ function gamelog.class_change(guid, new_class)
     })
 end
 
--- Generic objective event (label is the event type string, e.g. "obj_planted")
-function gamelog.objective(label, guid, obj_name)
+-- Generic objective event (label is the event type string, e.g. "obj_planted").
+-- pos is optional: obj_taken / obj_repickup carry it so a carrier route has a
+-- true start vertex (and a run has a start coordinate).
+function gamelog.objective(label, guid, obj_name, pos)
     gamelog.record(label, "player", {
         player    = guid,
         objective = obj_name,
+        pos       = pos,
     })
 end
 
@@ -201,21 +204,23 @@ end
 -- Vehicle timeline / telemetry event (label e.g. "vehicle_started",
 -- "vehicle_stopped", "vehicle_damaged", "vehicle_repaired", "vehicle_pos",
 -- "vehicle_damage", "vehicle_summary")
-function gamelog.vehicle_event(label, vehicle_name, fields)
+function gamelog.vehicle_event(label, vehicle_name, fields, leveltime)
     local ev = { vehicle = vehicle_name }
     if fields then
         for k, v in pairs(fields) do ev[k] = v end
     end
-    gamelog.record(label, "vehicle", ev)
+    gamelog.record(label, "vehicle", ev, leveltime)
 end
 
--- Objective-carrier position telemetry sample
-function gamelog.carrier_pos(guid, obj_name, pos)
+-- Objective-carrier position telemetry sample.
+-- leveltime is the moment the position was sampled, which for a corner vertex
+-- is a few frames before the event is emitted.
+function gamelog.carrier_pos(guid, obj_name, pos, leveltime)
     gamelog.record("carrier_pos", "player", {
         player    = guid,
         objective = obj_name,
         pos       = pos,
-    })
+    }, leveltime)
 end
 
 -- Pickup from console log

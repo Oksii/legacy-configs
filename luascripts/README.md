@@ -174,7 +174,7 @@ Ordered array of all events that occurred during the round. Every entry has:
 | `match_id` | string | Match ID (injected at save time) |
 | `round_id` | number | Round number (injected at save time) |
 | `unixtime` | number | Wall-clock timestamp in **milliseconds** when the event was recorded. |
-| `leveltime` | number | Server level time (ms) when the event was recorded. Raw as emitted — see the pause note below. |
+| `leveltime` | number | Server level time (ms) when the event was recorded. Raw as emitted — see the pause note below. Path telemetry (`carrier_pos` / `vehicle_pos`) is the one exception: it carries the time the *position* was sampled, which can be a few frames before the event was emitted (see the `carrier_pos` section). |
 | `group` | string | `"player"`, `"server"` or `"vehicle"` |
 | `label` | string | Event type (see below) |
 | ...fields | — | Event-specific fields |
@@ -307,6 +307,7 @@ Ordered array of all events that occurred during the round. Every entry has:
 |-------|-------------|
 | `player` | GUID |
 | `objective` | Objective name from config |
+| `pos` | `"x y z"` — `obj_taken` / `obj_repickup` (where the carry run started) and `obj_secured` (where it ended). Absent on the other objective labels, and on all of them in rounds recorded before 2.7.1. |
 
 **`obj_carrierkilled`** — killed an enemy objective carrier (killer-credited; never
 emitted for selfkills, teamkills, or world deaths)
@@ -345,7 +346,7 @@ vehicles (script_movers), enabled by `COLLECT_VEHICLE_STATS`. All carry a `vehic
 | `vehicle_stopped` | `pos`, `segment_distance`, `escorts?` | No displacement for >1s; distance of the completed segment |
 | `vehicle_damaged` | `player?`, `pos` | Health hit 0 (disabled); `player` = last damager if attributable |
 | `vehicle_repaired` | `player?`, `pos` | Health restored; `player` = repairing engineer via `Repair:` line |
-| `vehicle_pos` | `pos`, `escorts?` | 1s position sample while moving (`COLLECT_VEHICLE_TELEMETRY` only) |
+| `vehicle_pos` | `pos`, `escorts?` | Path-vertex position sample while moving (`COLLECT_VEHICLE_TELEMETRY` only) |
 | `vehicle_damage` | `player`, `damage` | Per-hit vehicle damage, clamped to the vehicle's remaining health (`COLLECT_VEHICLE_DAMAGE` only) |
 | `vehicle_finale` | `pos`, `escorts?` | The map's escort announce fired (destination reached); `escorts` = owning-team players at the destination |
 | `vehicle_summary` | `total_distance`, `moving_time_s`, `damaged_count`, `repaired_count` | One per vehicle that entered play, at round end |
@@ -373,7 +374,40 @@ landed. Trucks never emit these: they are not damageable (`takedamage 0`).
 |-------|-------------|
 | `player` | Carrier GUID |
 | `objective` | Objective being carried |
-| `pos` | `"x y z"`, sampled every 1s while carrying |
+| `pos` | `"x y z"` path vertex — see below |
+
+Carrier and vehicle positions are read every frame but emitted only where the path
+turns (`stats/util/pathgate.lua`), because these points are drawn as a polyline: a
+fixed cadence oversamples straight corridors while still cutting corners, and a
+carrier at `g_speed 320` covers ~400 units in a second. The emitted polyline stays
+within ~48 units of the real path (~64 for vehicles), with extra points at height
+changes, at direction reversals, on coming to a stop, and once a second while
+stationary. Spacing is therefore irregular — consume it by `leveltime`, never by
+assuming a fixed interval. Point count is independent of `sv_fps` (which ranges
+40–125 across the shipped configs) and lands at or below the previous 1s cadence:
+a 33s two-corner run with two holds costs ~30 events at every frame rate.
+
+**`leveltime` is when the position was sampled, not when the event was emitted.** A
+corner vertex is only recognised once the entity has moved off the corridor, so it
+is emitted a few frames late (measured worst case ~150ms) and backdated to the frame
+it was actually sampled at. Coordinate and timestamp therefore always describe the
+same instant, at the cost of `carrier_pos` sometimes appearing in the array slightly
+after an event with a later `leveltime`. The `carrier_pos` series is itself strictly
+monotonic; ordering *between* streams is `event_index`, i.e. array order.
+
+Each carry run is closed out with a final `carrier_pos` at the exact position where
+it ended, emitted before the `obj_secured` / `obj_dropped` / `obj_carrierkilled` event
+that ends it, and nothing is emitted for that player afterwards. Without it the drawn
+route would stop at the last corner, up to `max_seg` (512u) short of the truth. It is
+skipped only when the run happened to end on a point the gate had already emitted.
+
+> **Changed in 2.7.1.** Rounds recorded on 2.7.0 carry `carrier_pos` / `vehicle_pos` at a
+> flat 1s cadence, with the emit-time `leveltime` and no closing point. They remain valid
+> input — spacing was never load-bearing — but a 2.7.0 route is corner-cut by up to ~400
+> units and ends short of the objective, so per-round route comparisons across the boundary
+> are not like-for-like. `ComputeCarrierDistances` totals shift slightly for the same reason:
+> corner chords stop cutting corners (more accurate, marginally higher) while sub-tolerance
+> strafe jitter stops being counted (marginally lower).
 
 **`obj_flag_captured`**
 
@@ -715,6 +749,7 @@ interface ObjectiveEvent extends GamelogEventBase {
   label:     ObjectiveLabel;
   player:    Guid;
   objective: string;
+  pos?:      Position;  // obj_taken / obj_repickup / obj_secured: run start & end
 }
 
 // Killed an enemy objective carrier — killer-credited
@@ -740,7 +775,7 @@ interface CarrierPosEvent extends GamelogEventBase {  // COLLECT_VEHICLE_TELEMET
   label:     "carrier_pos";
   player:    Guid;
   objective: string;
-  pos:       Position;
+  pos:       Position;   // path vertex; spacing is irregular, use leveltime
 }
 
 // ─── vehicle events (COLLECT_VEHICLE_STATS) ────────────────────────────────
@@ -912,14 +947,14 @@ The match-ID endpoint is called as `GET {API_URL_MATCHID}/{server_ip}/{server_po
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `JSON_FILEPATH` | `""` (auto-detect) | Shared output directory for both `game_stats.log` and JSON dumps (when `DUMP_STATS_DATA = true`). Empty auto-resolves to `<fs_homepath>/legacy/`. Override via `STATS_API_PATH`. |
-| `LOG_FILEPATH` | derived | Always `JSON_FILEPATH .. "game_stats.log"` — not configurable separately. Set `STATS_API_PATH` to relocate both outputs. |
+| `JSON_FILEPATH` | `""` (auto-detect) | Shared output directory for both `stats.log` and JSON dumps (when `DUMP_STATS_DATA = true`). Empty auto-resolves to `<fs_homepath>/legacy/`. Override via `STATS_API_PATH`. |
+| `LOG_FILEPATH` | derived | Always `JSON_FILEPATH .. "stats.log"` — not configurable separately. Set `STATS_API_PATH` to relocate both outputs. |
 
 ### [COLLECTION]
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LOGGING_ENABLED` | `true` | Enable/disable the log file entirely |
+| `LOGGING_ENABLED` | `false` | Enable/disable the log file entirely |
 | `LOG_LEVEL` | `"info"` | `"info"` logs key lifecycle events. `"debug"` logs every per-event trace (verbose, high volume — only use for troubleshooting). |
 | `COLLECT_GAMELOG` | `true` | Record the in-round event timeline. Disabling this also suppresses kills, damage, chat, objectives, revives, class changes, and shoves from the output. |
 | `COLLECT_WEAPON_FIRE` | `false` | Record every weapon shot (`weapon_fire` gamelog events). **Very high volume** — one entry per bullet/shell fired by every player. Only enable for short controlled analysis sessions, never in normal production use. Covers both player weapons and fixed MG42s. |
@@ -928,7 +963,7 @@ The match-ID endpoint is called as `GET {API_URL_MATCHID}/{server_ip}/{server_po
 | `COLLECT_MOVEMENT_STATS` | `true` | Distance travelled and speed in `player_stats` |
 | `COLLECT_STANCE_STATS` | `true` | Stance-time breakdown in `player_stats` |
 | `COLLECT_VEHICLE_STATS` | `true` | Entity-state escort vehicle tracking: per-player escort credit (`player_stats.obj_vehicle.escort`) and `vehicle_*` timeline events in `gamelog`. Active only on maps with an `escort` config section — its entry names (or `script_name` keys) pin the vehicle script_movers; maps without one have no vehicle and are skipped entirely. |
-| `COLLECT_VEHICLE_TELEMETRY` | `true` | 1-second position samples for moving vehicles (`vehicle_pos`) and objective carriers (`carrier_pos`), enabling route replay. Modest volume (~200 events per escort round). |
+| `COLLECT_VEHICLE_TELEMETRY` | `true` | Path-vertex position samples for moving vehicles (`vehicle_pos`) and objective carriers (`carrier_pos`), enabling route replay. Sampled per frame, emitted only where the path turns, so volume is independent of `sv_fps` and stays at or below one point per second (~200 events per escort round). |
 | `COLLECT_VEHICLE_DAMAGE` | `true` | Per-player damage tracking for damageable objectives: `vehicle_damage` events + `player_stats.obj_vehicle.damage` / `.repairs` for vehicles, and `obj_damage` events for `ET_CONSTRUCTIBLE` objectives (command posts, breach walls, barriers). Corpse gibs and decorative breakables are filtered out; damage is clamped to remaining health. Trucks are not damageable and never emit these. |
 
 ### [OUTPUT]
@@ -950,7 +985,7 @@ the corresponding flag set (`auto_rename`, `auto_sort`, `auto_start`). They have
 | `AUTO_START` | `false` | Countdown to `scheduled_start` from match data and force-start via `ref allready`. Includes a late-join 5-second countdown if all players arrive after the scheduled time. |
 | `AUTO_MAP` | `false` | Automatically switch to the next map in the match rotation after round 2 intermission ends. |
 | `AUTO_CONFIG` | `false` | Apply server config via `ref config <name>` based on roster player count at map 1 round 1 warmup. |
-| `AUTO_SCORES` | `false` | Track match scores using ET stopwatch rules. Active for **gather matches** (requires `auto_scores=true` in match data, BO3 termination enforced) and **ng matches** (always-on when no gather match is active, scores accumulate indefinitely). Embeds current score state into stats submissions as `metadata.scores`. Announces score in chat during intermission. |
+| `AUTO_SCORES` | `true` | Track match scores using ET stopwatch rules. Active for **gather matches** (requires `auto_scores=true` in match data, BO3 termination enforced) and **ng matches** (always-on when no gather match is active, scores accumulate indefinitely). Embeds current score state into stats submissions as `metadata.scores`. Announces score in chat during intermission. |
 | `VERSION_CHECK` | `true` | Check `API_URL_VERSION` at startup and broadcast a chat warning if outdated |
 
 ### [AUTO-CONFIG MAP]
@@ -971,8 +1006,8 @@ Player count is taken from the registered gather roster (`alpha_team` + `beta_te
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AUTO_START_WAIT_INITIAL` | `420` | Seconds before force-start on the first round of a match (map 1, round 1). **Simple mode only.** |
-| `AUTO_START_WAIT` | `180` | Seconds before force-start on all subsequent rounds. |
+| `AUTO_START_WAIT_INITIAL` | `300` | Seconds before force-start on the first round of a match (map 1, round 1). **Simple mode only.** |
+| `AUTO_START_WAIT` | `120` | Seconds before force-start on all subsequent rounds. |
 
 ### [AUTO-START PHASED MODE]
 
@@ -1007,7 +1042,7 @@ silently ignored and the defaults above apply.
 | `STATS_API_URL_SUBMIT` | `API_URL_SUBMIT` |
 | `STATS_API_URL_MATCHID` | `API_URL_MATCHID` |
 | `STATS_API_URL_VERSION` | `API_URL_VERSION` |
-| `STATS_API_PATH` | `JSON_FILEPATH` — shared output dir for both the log file (`game_stats.log`) and JSON dumps |
+| `STATS_API_PATH` | `JSON_FILEPATH` — shared output dir for both the log file (`stats.log`) and JSON dumps |
 | `STATS_API_LOG_LEVEL` | `LOG_LEVEL` |
 | `STATS_API_LOG` | `LOGGING_ENABLED` (`"true"` / `"false"`) |
 | `STATS_API_GAMELOG` | `COLLECT_GAMELOG` |
@@ -1188,16 +1223,11 @@ Both must be available to the ETLegacy Lua runtime (present in `lualibs/`):
 luascripts/
 ├── stats.lua                   ← entry point + configuration
 ├── config.toml                 ← map patterns only
-├── test/                       ← dev tooling, never loaded by stats.lua
-│   ├── entdump.lua             on-server diagnostic: dumps mover/checkpoint/constructible
-│   │                           entities to <fs_homepath>/legacy/entdump.log (load via lua_modules)
-│   ├── et_stub.lua             offline `et` API stub for the tests below
-│   ├── vehicle_test.lua        offline unit test:  lua5.4 luascripts/test/vehicle_test.lua
-│   └── replay.lua              offline regression: lua5.4 luascripts/test/replay.lua <console.log>
 └── stats/
     ├── util/
     │   ├── log.lua             timestamped file logger (info / debug levels)
     │   ├── http.lua            async/sync curl helpers
+    │   ├── pathgate.lua        vertex-preserving position sampling for path telemetry
     │   └── utils.lua           strip_colors, normalize, sanitize, distance, get_connected_players, …
     ├── config.lua              TOML loader
     ├── players.lua             GUID cache, get_snapshot(), class-switch detection

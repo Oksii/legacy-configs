@@ -22,7 +22,8 @@
 --]]
 
 local vehicle = {}
-local utils = require("luascripts/stats/util/utils")
+local utils    = require("luascripts/stats/util/utils")
+local pathgate = require("luascripts/stats/util/pathgate")
 
 local log
 local players_ref
@@ -31,8 +32,10 @@ local gamelog_ref
 local _collect_telemetry    = false
 local _collect_damage       = false
 
+-- Telemetry is vertex-gated (util/pathgate) rather than fixed-cadence: movers
+-- run on rails, so points are only worth emitting where the rail bends. The
+-- poll interval stays 250ms because escort credit accrues dt_ms from it.
 local POLL_INTERVAL_MS      = 250
-local TELEMETRY_INTERVAL_MS = 1000
 local STOP_GRACE_MS         = 1000   -- moving → stopped after this long without displacement
 local INIT_GRACE_MS         = 2000   -- after a fresh poll clock: resync only, no events/credit.
                                      -- Covers mid-round VM reloads where the engine restores
@@ -48,7 +51,7 @@ local ENT_LAST              = 1021
 
 -- candidates[entnum] = per-vehicle state machine:
 -- { script_name, origin, health, disabled, started, is_moving,
---   last_move_ms, last_telemetry_ms, segment_distance, total_distance,
+--   last_move_ms, pos_gate, segment_distance, total_distance,
 --   moving_time_ms, damaged_count, repaired_count, last_damager }
 local candidates            = {}
 
@@ -71,9 +74,9 @@ local function guid_of(clientNum)
 end
 
 
-local function emit(label, cand, fields)
+local function emit(label, cand, fields, leveltime)
     if gamelog_ref then
-        gamelog_ref.vehicle_event(label, cand and cand.script_name or nil, fields)
+        gamelog_ref.vehicle_event(label, cand and cand.script_name or nil, fields, leveltime)
     end
     if log then
         log.debug(string.format("Vehicle: %s (%s)", label, cand and cand.script_name or "?"))
@@ -91,13 +94,7 @@ function vehicle.init(cfg, log_ref, players_module, gamelog_module)
 end
 
 
--- Scan for script_mover candidates. Vehicle tracking requires the map to
--- have an escort config section — maps without one (radar, adlernest, …)
--- have no escort vehicle, but do carry damageable script_movers (cabinets,
--- radios) that must not masquerade as vehicles. Escort entries narrow the
--- scan: an entry's explicit `script_name` — or, failing that, its own
--- section name (escort.tank → scriptName "tank") — pins the matching
--- movers; the unfiltered mover set is only kept when nothing matches.
+-- Scan for script_mover candidates. 
 function vehicle.init_map(map_config)
     vehicle.reset()
 
@@ -120,8 +117,7 @@ function vehicle.init_map(map_config)
             if tonumber(e_cfg.radius) then escort_radius = tonumber(e_cfg.radius) end
         end
     end
-    -- Escorts are an attacker objective and attackers are allies on every
-    -- map in rotation; `team = "axis"` in the escort config overrides.
+    -- `team = "axis"` in the escort config overrides.
     owner_team = owner_team or et.TEAM_ALLIES
 
     local all, matched = {}, {}
@@ -138,7 +134,7 @@ function vehicle.init_map(map_config)
                     started           = false,
                     is_moving         = false,
                     last_move_ms      = 0,
-                    last_telemetry_ms = 0,
+                    pos_gate          = pathgate.new(pathgate.VEHICLE),
                     segment_distance  = 0,
                     total_distance    = 0,
                     moving_time_ms    = 0,
@@ -233,9 +229,14 @@ local function poll_entity(entnum, cand, now, dt_ms)
         cand.total_distance   = cand.total_distance + displacement
         cand.moving_time_ms   = cand.moving_time_ms + dt_ms
 
-        if _collect_telemetry and (now - cand.last_telemetry_ms) >= TELEMETRY_INTERVAL_MS then
-            cand.last_telemetry_ms = now
-            emit("vehicle_pos", cand, { pos = utils.fmt_pos(origin), escorts = escorts })
+        -- Only sampled while moving, so a parked vehicle stays silent (its
+        -- vehicle_stopped event already carries the position).
+        if _collect_telemetry then
+            local vertex, vertex_ms = cand.pos_gate:sample(origin, now)
+            if vertex then
+                emit("vehicle_pos", cand,
+                    { pos = utils.fmt_pos(vertex), escorts = escorts }, vertex_ms)
+            end
         end
     elseif cand.is_moving and (now - cand.last_move_ms) >= STOP_GRACE_MS then
         cand.is_moving = false
