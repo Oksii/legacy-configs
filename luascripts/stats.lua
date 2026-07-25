@@ -1,6 +1,6 @@
 --[[
     stats.lua  — root module for ETLegacy game stats collection
-    Version: 2.7.0
+    Version: 2.7.1
 
     All user-facing settings live in the CONFIGURATION block below.
     config.toml is kept only for map-specific patterns and common buildables.
@@ -29,7 +29,7 @@ local COLLECT_MOVEMENT_STATS    = true
 local COLLECT_STANCE_STATS      = true   -- prone / crouch / sprint time, etc.
 local COLLECT_GAMELOG           = true   -- in-round event timeline (kills, damage, chat, objectives, etc.)
 local COLLECT_VEHICLE_STATS     = true   -- escort vehicle tracking: per-player escort credit + timeline events
-local COLLECT_VEHICLE_TELEMETRY = true   -- 1s position samples for vehicle + objective carriers (~200 events/round)
+local COLLECT_VEHICLE_TELEMETRY = true   -- path-vertex position samples for vehicle + objective carriers (~200 events/round)
 local COLLECT_VEHICLE_DAMAGE    = true   -- per-player vehicle/objective damage + repair tally events
 local COLLECT_WEAPON_FIRE       = false  -- log every weapon shot (et_WeaponFire + et_FixedMGFire)
                                          -- WARNING: very high volume -- not recommended for normal use.
@@ -76,7 +76,7 @@ local SAVE_STATS_DELAY          = 3000   -- ms after intermission before SaveSta
 
 -- [MODULE]
 local MODNAME                   = "stats"
-local VERSION                   = "2.7.0"
+local VERSION                   = "2.7.1"
 
 -- [ENV OVERRIDES]
 -- Any setting above can be overridden by an environment variable of the same
