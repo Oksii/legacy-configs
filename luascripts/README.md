@@ -307,7 +307,31 @@ Ordered array of all events that occurred during the round. Every entry has:
 |-------|-------------|
 | `player` | GUID |
 | `objective` | Objective name from config |
-| `pos` | `"x y z"` — `obj_taken` / `obj_repickup` (where the carry run started) and `obj_secured` (where it ended). Absent on the other objective labels, and on all of them in rounds recorded before 2.7.1. |
+| `pos` | `"x y z"` — the acting player's origin when the event fired. See the table below for the exceptions. |
+| `run` | Carry-run id, on the labels that bound a run (`obj_taken`, `obj_repickup`, `obj_secured`, `obj_returned`). See [Grouping samples into runs](#grouping-samples-into-runs) for what it means on each. 2.7.2+ |
+
+> **Changed in 2.7.2.** Before 2.7.2 only the carry cycle carried a position
+> (`obj_taken` / `obj_repickup` / `obj_secured`, plus `obj_dropped`); everything else had
+> none, which is why plants, defuses, destructions, repairs and flag captures could not be
+> drawn on a replay. No version gate is needed to consume this: an event either carries a
+> position or it does not, and older reports simply show fewer markers.
+
+Where each position comes from:
+
+| Label | `pos` is |
+|-------|----------|
+| `obj_taken`, `obj_repickup` | where the carry run started |
+| `obj_secured` | where it ended — the same reading as the run's final `carrier_pos` |
+| `obj_dropped` | where the objective was lost, likewise shared with the closing sample |
+| `obj_planted`, `obj_defused` | the engineer's origin, i.e. the charge |
+| `obj_repaired` | the engineer's origin |
+| `obj_returned` | the returner's origin — they had to reach the objective to return it, so this is where it was lying. A `WORLD` return (the objective timing out back to its stand after being dropped and left) has no actor and falls back to the position the carry ended at, which is the same spot |
+| `obj_destroyed` | **dynamite:** the position the charge was *planted* at, remembered from `obj_planted` — the destruction fires ~30s after the plant, by which time the planter is usually dead or respawned across the map. **Announce-only destructions** (command posts, satchel, direct fire): the destroyed entity's own origin, taken from the `et_Damage` record that attributed it. Never the attacker's position — a satchel has to be placed on the target, but a panzerfaust or tank shell can take a command post from across the map |
+
+`pos` is absent only when no trustworthy source existed: an origin reading that failed
+validation (see the `carrier_pos` section on closing points), or a brush entity reporting
+`0 0 0`. An absent `pos` is always a deliberate omission rather than a zero — the field is
+simply not present, and never a placeholder coordinate.
 
 **`obj_carrierkilled`** — killed an enemy objective carrier (killer-credited; never
 emitted for selfkills, teamkills, or world deaths)
@@ -318,6 +342,9 @@ emitted for selfkills, teamkills, or world deaths)
 | `victim` | Carrier GUID |
 | `objective` | Objective the victim was carrying |
 | `weapon` | meansOfDeath |
+| `pos` | Killer origin (follows `kill`'s `killer_pos`). 2.7.2+ |
+| `victim_pos` | Carrier origin — where the objective went down, and the same reading as the run's closing `carrier_pos`. This is the useful one for a replay. 2.7.2+ |
+| `run` | The **victim's** carry run that this kill ended. The event is credited to the killer but describes the victim's run. 2.7.2+ |
 
 Attribution comes from the engine console lines directly (`Item:` line preceding the
 steal/return popup, `Objective_Destroyed: <clientNum>`, `Repair: <clientNum>`); announce-only
@@ -375,6 +402,7 @@ landed. Trucks never emit these: they are not damageable (`takedamage 0`).
 | `player` | Carrier GUID |
 | `objective` | Objective being carried |
 | `pos` | `"x y z"` path vertex — see below |
+| `run` | Carry-run id — see [Grouping samples into runs](#grouping-samples-into-runs). 2.7.2+ |
 
 Carrier and vehicle positions are read every frame but emitted only where the path
 turns (`stats/util/pathgate.lua`), because these points are drawn as a polyline: a
@@ -383,23 +411,81 @@ carrier at `g_speed 320` covers ~400 units in a second. The emitted polyline sta
 within ~48 units of the real path (~64 for vehicles), with extra points at height
 changes, at direction reversals, on coming to a stop, and once a second while
 stationary. Spacing is therefore irregular — consume it by `leveltime`, never by
-assuming a fixed interval. Point count is independent of `sv_fps` (which ranges
-40–125 across the shipped configs) and lands at or below the previous 1s cadence:
-a 33s two-corner run with two holds costs ~30 events at every frame rate.
+assuming a fixed interval.
+
+**Carriers additionally have a 10 Hz spacing floor while they are moving** (2.7.2+,
+`move_gap_ms`). Corner vertices alone describe a route's shape but chord across it, so a
+strafe-jumped or circle-strafed approach measures shorter than it was; the floor puts
+samples ~32 units apart at `g_speed 320`, inside the corridor tolerance, so the polyline
+is the route rather than an approximation of it. The floor is gated on distance covered,
+not on frame count, so volume remains independent of `sv_fps` (which ranges 40–125 across
+the shipped configs) — verified at 49 points for the same ground at `sv_fps` 125, 50 and
+20. A carrier standing still never trips it and stays on the 1 Hz keepalive.
+
+Vehicles keep pure vertex gating: an escort truck runs 8+ minutes on a fixed spline, where
+a floor would cost thousands of points and buy no fidelity.
+
+Budget: the floor costs ~1.6x total gamelog events on the heaviest round in the reference
+set (`decay_sw` round 1, 212.6s of carry time — 423 `carrier_pos` before, ~2100 after).
+Expect roughly `10 x carry_seconds` samples per round.
+
+#### Grouping samples into runs
+
+From 2.7.2 every `carrier_pos` carries a `run`, a per-round id allocated on each pickup and
+shared with the events that bound that carry. **Group by `run` to partition a round's
+samples into carries.** Ids start at 1 each round, count in pickup order, and are shared
+across objectives.
+
+| Label | Relationship to `run` |
+|-------|-----------------------|
+| `obj_taken`, `obj_repickup` | opens the run |
+| `carrier_pos` | belongs to it |
+| `obj_secured`, `obj_dropped` | closes it |
+| `obj_carrierkilled` | closes it — credited to the killer, but the id is the **victim's** run |
+| `obj_returned` | names the run it **terminated**, which has normally already closed. An objective is returned while it lies on the ground, so the return follows an `obj_dropped` rather than ending a live carry: the id says this carry ended in a reset rather than in someone picking the objective back up. After a re-pickup it names the latest run, not the first. |
+
+This is not a convenience. `(player, objective)` does not identify a carry: on
+`karsiah_te2` round 1 of match `075fe912` a single player takes `north_documents` four
+separate times. Before 2.7.2 the only way to partition was to replay the surrounding
+events in array order, and a consumer that gets that state machine wrong fuses two
+disjoint carries into one and draws a segment across the map. Pre-2.7.2 reports still
+require that fallback.
 
 **`leveltime` is when the position was sampled, not when the event was emitted.** A
 corner vertex is only recognised once the entity has moved off the corridor, so it
 is emitted a few frames late (measured worst case ~150ms) and backdated to the frame
 it was actually sampled at. Coordinate and timestamp therefore always describe the
 same instant, at the cost of `carrier_pos` sometimes appearing in the array slightly
-after an event with a later `leveltime`. The `carrier_pos` series is itself strictly
-monotonic; ordering *between* streams is `event_index`, i.e. array order.
+after an event with a later `leveltime`. Within one run the samples are non-decreasing
+in `leveltime` and none exceeds the event that ends the run; across runs and across
+carriers the streams interleave, so ordering *between* them is `event_index`, i.e. array
+order. (This holds from 2.7.2 — see the clock note below for what pre-2.7.2 reports do.)
 
 Each carry run is closed out with a final `carrier_pos` at the exact position where
 it ended, emitted before the `obj_secured` / `obj_dropped` / `obj_carrierkilled` event
 that ends it, and nothing is emitted for that player afterwards. Without it the drawn
 route would stop at the last corner, up to `max_seg` (512u) short of the truth. It is
 skipped only when the run happened to end on a point the gate had already emitted.
+
+From 2.7.2 that closing origin is **validated before use**, and the run-ending event reuses
+the same reading rather than taking its own. A reading is rejected if it is missing, exactly
+`0 0 0`, or further from the last sampled vertex than a player could have travelled (2000u).
+The `handle_disconnect` path is why: it runs from `et_ClientDisconnect`, where the entity may
+already be torn down. When a reading is rejected the closing sample is omitted and the
+run-ending event carries **no `pos`** — the event itself is still emitted. Two guarantees
+follow: `obj_secured` / `obj_dropped` / `obj_carrierkilled.victim_pos` always equal the run's
+final `carrier_pos`, and no coordinate is ever a placeholder.
+
+> **Changed in 2.7.2 — affects reading stored reports.** On 2.7.1 and earlier, `carrier_pos`
+> and `vehicle_pos` are stamped on the engine's frame clock while every other event is
+> stamped with `et.trap_Milliseconds()`. The two run several seconds apart (measured ~10.2s
+> on `karsiah_te2` round 1 of match `075fe912`, ~3.3s for `vehicle_pos` on `supply`), so in
+> those reports telemetry `leveltime` is **not comparable** to any other event's, samples
+> appear after `round_end`, and each run's closing point sorts *before* its own approach —
+> which draws as a straight line across the map. **Read pre-2.7.2 telemetry in array order,
+> not `leveltime` order**; the coordinates themselves are correct and the routes are
+> continuous when read that way. From 2.7.2 both clocks are the timeline clock and either
+> ordering works.
 
 > **Changed in 2.7.1.** Rounds recorded on 2.7.0 carry `carrier_pos` / `vehicle_pos` at a
 > flat 1s cadence, with the emit-time `leveltime` and no closing point. They remain valid
@@ -415,6 +501,12 @@ skipped only when the run happened to end on a point the gate had already emitte
 |-------|-------------|
 | `player` | GUID |
 | `flag` | Flag name (`allies_flag`, `axis_flag`, or config key) |
+| `pos` | The credited player's origin. 2.7.2+ |
+| `flag_pos` | The checkpoint entity's own position. 2.7.2+ |
+
+Credit is proximity-based and given to every player within range of the flag, so one capture
+can produce several events: `pos` says who was there, `flag_pos` says where "there" was and is
+the same on all of them.
 
 **`pickup`** — console-log pickup/use event
 
@@ -744,22 +836,41 @@ interface MessageEvent extends GamelogEventBase {
 type ObjectiveLabel = "obj_planted" | "obj_defused" | "obj_destroyed" | "obj_repaired"
                     | "obj_taken"   | "obj_repickup" | "obj_secured" | "obj_returned";
 
+/** Per-round carry-run id, 2.7.2+. Allocated on each pickup from 1, shared by the
+ *  run's carrier_pos samples and the events that open and close it. Group by this
+ *  rather than by (player, objective) — one player can carry one objective several
+ *  times in a round. Absent before 2.7.2. */
+type CarryRun = number;
+
 interface ObjectiveEvent extends GamelogEventBase {
   group:     "player";
   label:     ObjectiveLabel;
   player:    Guid;
   objective: string;
-  pos?:      Position;  // obj_taken / obj_repickup / obj_secured: run start & end
+  /** Acting player's origin. 2.7.2+ on every label; before that only on
+   *  obj_taken / obj_repickup / obj_secured. Two labels use a different source:
+   *  obj_destroyed is the charge's plant position, or the destroyed entity's own
+   *  origin for announce-only destructions; a WORLD obj_returned is where the
+   *  carry ended. Absent only where no trustworthy source existed — see the
+   *  per-label table in the docs. */
+  pos?:      Position;
+  /** Only on the labels that bound a run. */
+  run?:      CarryRun;
 }
 
 // Killed an enemy objective carrier — killer-credited
 interface ObjCarrierKilledEvent extends GamelogEventBase {
-  group:     "player";
-  label:     "obj_carrierkilled";
-  player:    Guid;    // killer
-  victim:    Guid;    // carrier
-  objective: string;
-  weapon:    number;
+  group:      "player";
+  label:      "obj_carrierkilled";
+  player:     Guid;    // killer
+  victim:     Guid;    // carrier
+  objective:  string;
+  weapon:     number;
+  pos?:       Position;  // killer origin, 2.7.2+
+  /** Carrier origin — where the objective went down. 2.7.2+ */
+  victim_pos?: Position;
+  /** The *victim's* run, which this kill ends. 2.7.2+ */
+  run?:       CarryRun;
 }
 
 interface ObjDroppedEvent extends GamelogEventBase {
@@ -767,7 +878,10 @@ interface ObjDroppedEvent extends GamelogEventBase {
   label:     "obj_dropped";
   player:    Guid;
   objective: string;
+  /** null when the origin reading failed validation (e.g. a torn-down entity on
+   *  the disconnect path). Never a placeholder coordinate. */
   pos:       Position | null;
+  run?:      CarryRun;  // 2.7.2+
 }
 
 interface CarrierPosEvent extends GamelogEventBase {  // COLLECT_VEHICLE_TELEMETRY
@@ -776,6 +890,8 @@ interface CarrierPosEvent extends GamelogEventBase {  // COLLECT_VEHICLE_TELEMET
   player:    Guid;
   objective: string;
   pos:       Position;   // path vertex; spacing is irregular, use leveltime
+  /** 2.7.2+. Group by this to partition a round's samples into carries. */
+  run?:      CarryRun;
 }
 
 // ─── vehicle events (COLLECT_VEHICLE_STATS) ────────────────────────────────
@@ -822,6 +938,11 @@ interface FlagCapturedEvent extends GamelogEventBase {
   label:  "obj_flag_captured";
   player: Guid;
   flag:   string;
+  /** Credited player's origin. Credit is proximity-based and given to everyone in
+   *  range, so one capture can produce several of these events. 2.7.2+ */
+  pos?:      Position;
+  /** The checkpoint entity's own position — identical across those events. 2.7.2+ */
+  flag_pos?: Position;
 }
 
 interface PickupEvent extends GamelogEventBase {
@@ -963,7 +1084,7 @@ The match-ID endpoint is called as `GET {API_URL_MATCHID}/{server_ip}/{server_po
 | `COLLECT_MOVEMENT_STATS` | `true` | Distance travelled and speed in `player_stats` |
 | `COLLECT_STANCE_STATS` | `true` | Stance-time breakdown in `player_stats` |
 | `COLLECT_VEHICLE_STATS` | `true` | Entity-state escort vehicle tracking: per-player escort credit (`player_stats.obj_vehicle.escort`) and `vehicle_*` timeline events in `gamelog`. Active only on maps with an `escort` config section — its entry names (or `script_name` keys) pin the vehicle script_movers; maps without one have no vehicle and are skipped entirely. |
-| `COLLECT_VEHICLE_TELEMETRY` | `true` | Path-vertex position samples for moving vehicles (`vehicle_pos`) and objective carriers (`carrier_pos`), enabling route replay. Sampled per frame, emitted only where the path turns, so volume is independent of `sv_fps` and stays at or below one point per second (~200 events per escort round). |
+| `COLLECT_VEHICLE_TELEMETRY` | `true` | Path position samples for moving vehicles (`vehicle_pos`) and objective carriers (`carrier_pos`), enabling route replay. Sampled per frame; volume is independent of `sv_fps` in both cases. **Vehicles** emit only where the path turns — at or below one point per second (~200 events per escort round). **Carriers** additionally hold a 10 Hz floor while moving (2.7.2+), giving ~32 units between samples so carry distance is measured rather than estimated: expect roughly `10 x carry_seconds` per round (~2100 on the heaviest round measured, versus 423 under pure vertex gating), and 1 Hz while a carrier stands still. |
 | `COLLECT_VEHICLE_DAMAGE` | `true` | Per-player damage tracking for damageable objectives: `vehicle_damage` events + `player_stats.obj_vehicle.damage` / `.repairs` for vehicles, and `obj_damage` events for `ET_CONSTRUCTIBLE` objectives (command posts, breach walls, barriers). Corpse gibs and decorative breakables are filtered out; damage is clamped to remaining health. Trucks are not damageable and never emit these. |
 
 ### [OUTPUT]

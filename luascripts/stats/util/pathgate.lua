@@ -9,6 +9,11 @@
     ladder/fall changes only z, and a stationary entity produces no geometry
     at all (keepalive keeps the ingest side's segment anchors fresh).
 
+    Corner vertices alone describe a route's shape but chord across it, which
+    under-measures a path that weaves inside the corridor. Profiles that need
+    the distance to be right as well as the shape set move_gap_ms, a spacing
+    floor applied while the entity is actually covering ground.
+
     Usage:
         local gate = pathgate.new(pathgate.CARRIER)
         local vertex, vertex_ms = gate:sample(origin, level_time)  -- every frame
@@ -37,6 +42,14 @@ local pathgate = {}
 --               wherever the timer happened to fire instead of on the corner
 --   max_gap_ms  absolute cap on the interval between points, so even a prone
 --               crawl stays well inside the ingest side's segment gap limit
+--   move_gap_ms sample floor while actually covering ground: once the entity is
+--               min_dir_seg from the anchor, no more than this long may pass
+--               without a point. 0 disables it, leaving pure vertex gating.
+--               Gated on distance rather than on the per-sample `moving` flag
+--               because that flag is frame-rate dependent -- at sv_fps 125 a
+--               sprint covers 2.56u per sample, barely over still_epsilon --
+--               whereas distance from the anchor is not. A parked entity never
+--               clears min_dir_seg and so still falls through to keepalive_ms
 --   still_epsilon  per-sample displacement below which the entity counts as
 --               stopped; coming to a stop pins a vertex at the stopping point
 --   min_gap_ms  floor between points for the stop rule, so stutter-stepping
@@ -55,11 +68,25 @@ local DEFAULTS = {
     dev_epsilon   = 8,
     still_epsilon = 2,
     min_gap_ms    = 250,
+    move_gap_ms   = 0,
 }
 
 -- Objective carriers move at player speed (g_speed 320, more when sprinting
 -- or boosted) and take tight corners.
-pathgate.CARRIER = {}
+--
+-- move_gap_ms gives carriers a 10 Hz floor while they are covering ground. The
+-- corner gates alone draw the route's shape but chord across it between
+-- vertices, so a strafe-jumped or circle-strafed approach measures shorter than
+-- it was; at 320 u/s a 100 ms floor puts samples 32 units apart, inside tol_xy,
+-- and the polyline becomes the path rather than an approximation of it.
+-- Deliberately time-based and not per-frame: sample volume must not depend on
+-- sv_fps, or the same carry produces 2.5x the events on a 125 fps server as on
+-- a 50 fps one with nothing downstream able to tell the two apart. A carrier
+-- standing on the spot never clears min_dir_seg, so it still beats at
+-- keepalive_ms rather than 10 Hz.
+pathgate.CARRIER = {
+    move_gap_ms = 100,
+}
 
 -- Escort vehicles are slow and follow fixed spline paths, so a wider corridor
 -- costs nothing in fidelity.
@@ -204,6 +231,9 @@ function Gate:sample(pos, now)
             vertex, vertex_ms = p, now  -- came to a stop: pin where
         elseif not self.moving and elapsed >= self.keepalive_ms then
             vertex, vertex_ms = p, now  -- parked: heartbeat
+        elseif self.move_gap_ms > 0 and travelled >= self.min_dir_seg
+           and elapsed >= self.move_gap_ms then
+            vertex, vertex_ms = p, now  -- covering ground: hold the sample floor
         elseif elapsed >= self.max_gap_ms then
             vertex, vertex_ms = p, now  -- crawling: bound the gap anyway
         end

@@ -1,6 +1,6 @@
 --[[
     stats.lua  — root module for ETLegacy game stats collection
-    Version: 2.7.1
+    Version: 2.7.2
 
     All user-facing settings live in the CONFIGURATION block below.
     config.toml is kept only for map-specific patterns and common buildables.
@@ -57,8 +57,8 @@ local AUTO_CONFIG_MAP = {
 }
 
 -- [AUTO-START TIMING]
-local AUTO_START_WAIT_INITIAL   = 420    -- seconds  (First Round, 7min)
-local AUTO_START_WAIT           = 180    -- seconds  (Consecutive Rounds, 3 min)
+local AUTO_START_WAIT_INITIAL   = 300    -- seconds  (First Round, 7min)
+local AUTO_START_WAIT           = 120    -- seconds  (Consecutive Rounds, 3 min)
 
 -- [AUTO-START PHASED MODE]
 -- "simple"  → single window using AUTO_START_WAIT_INITIAL / AUTO_START_WAIT (default).
@@ -76,7 +76,7 @@ local SAVE_STATS_DELAY          = 3000   -- ms after intermission before SaveSta
 
 -- [MODULE]
 local MODNAME                   = "stats"
-local VERSION                   = "2.7.1"
+local VERSION                   = "2.7.2"
 
 -- [ENV OVERRIDES]
 -- Any setting above can be overridden by an environment variable of the same
@@ -461,8 +461,24 @@ end
 
 -- ============================================================ --
 
+-- TWO CLOCKS, do not mix them. They run several seconds apart and the offset drifts.
+--
+--   frame_level_time       -- the level clock the engine passes to this callback. Use it for
+--                             intervals inside one module, and to pair with values the engine
+--                             itself stamps in level time: CS_LEVEL_START_TIME
+--                             (events.calc_reinf_time) and pers.lastSpawnTime
+--                             (movement.track). Those two are correct as-is -- do not
+--                             "fix" them to now_ms or spawn/reinforce detection breaks.
+--   et.trap_Milliseconds() -- the timeline clock. gamelog.record stamps every event with it,
+--                             gamestate.round_end_time uses it, and the pause markers whose
+--                             drift ingest subtracts are measured on it.
+--
+-- Rule: anything that becomes a timestamp, or is compared against one, uses now_ms.
+-- Passing frame_level_time to the telemetry ticks put vehicle_pos/carrier_pos ~6s ahead of
+-- round_end and left the 3s damage/repair attribution windows comparing across the offset.
 function et_RunFrame(frame_level_time)
     level_time = frame_level_time
+    local now_ms = et.trap_Milliseconds()
 
     http.poll_pending(frame_level_time)
 
@@ -501,16 +517,21 @@ function et_RunFrame(frame_level_time)
         _was_paused = false
     end
 
+    -- now_ms, not frame_level_time: these emit timestamped telemetry and compare against
+    -- stamps taken with et.trap_Milliseconds() elsewhere (vehicle.on_damage via events.lua,
+    -- vehicle.on_repair via objectives.lua).
     if COLLECT_VEHICLE_STATS then
-        vehicle.tick(frame_level_time, paused, is_playing)
+        vehicle.tick(now_ms, paused, is_playing)
     end
     -- carrier upkeep: manual-drop (+dropobj) detection + carrier telemetry
     if (COLLECT_OBJ_STATS or COLLECT_GAMELOG) and is_playing and not paused then
-        objectives.tick(frame_level_time)
+        objectives.tick(now_ms)
     end
 
+    -- now_ms so both ends of the round are measured on the timeline clock: round_end_time
+    -- is et.trap_Milliseconds() (gamestate.lua), as is et_InitGame's round_start_time.
     if current_gs == et.GS_PLAYING and gamestate.round_start_time == 0 then
-        gamestate.round_start_time = frame_level_time
+        gamestate.round_start_time = now_ms
         gamestate.round_start_unix = os.time()
     end
 
