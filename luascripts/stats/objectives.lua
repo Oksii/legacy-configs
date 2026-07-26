@@ -60,33 +60,80 @@ local DESTROY_DEDUP_MS      = 1500
 local _collect_telemetry    = false
 local _carrier_gates        = {}   -- [clientNum] = pathgate instance
 
+-- Carry-run identity. Every pickup opens a numbered run, and the number is
+-- stamped on the run's carrier_pos samples and on the events that open and close
+-- it. Without it a consumer has to rebuild run boundaries by interleaving
+-- events, and the ambiguity is real rather than theoretical: one karsiah round
+-- has a single player take the same documents four separate times, so
+-- (player, objective) does not identify a run. Ids are per round, allocated in
+-- pickup order from 1, and shared across objectives.
+local _run_seq              = 0
+local _carrier_run_id       = {}   -- [clientNum] = run id
+
 -- Active map config
 local _map_config           = nil
 local _common_buildables    = nil
 
 
+-- Furthest a run's closing position may sit from the last sampled vertex before
+-- we stop believing it. This is the ingest side's teleport threshold, and with
+-- the carrier sample floor the last vertex is at most ~32 units old, so the
+-- bound is slack by two orders of magnitude -- it only ever catches a reading
+-- that is wrong, never one that is merely stale.
+local MAX_CLOSING_JUMP = 2000
+
+-- A run's exit path reads the carrier's origin one last time, and that read is
+-- not always trustworthy. handle_disconnect runs from et_ClientDisconnect,
+-- where the entity may already be torn down and read as the world origin, and
+-- any stale or zeroed value would be drawn as a line from the route to the
+-- corner of the map. Reject the implausible rather than emit it: a missing
+-- reading, an exact 0 0 0, or a jump no player could have made since the last
+-- known-good vertex.
+--
+-- Note pers.connected is useless as a guard here -- the engine does not clear
+-- it until the end of ClientDisconnect, so it still reads CON_CONNECTED on the
+-- one path that needs checking.
+local function plausible_origin(pos, last)
+    if not pos then return nil end
+    if pos[1] == 0 and pos[2] == 0 and pos[3] == 0 then return nil end
+    if last and utils.distance3d_units(last, pos) > MAX_CLOSING_JUMP then return nil end
+    return pos
+end
+
+
+-- Closes out a carry: emits the run's final carrier_pos and returns the
+-- validated position, so the caller's own obj_secured / obj_dropped describes
+-- the same instant instead of issuing a second, separately-trusted read.
+-- Returns nil when no position could be trusted, in which case the caller
+-- should emit no pos at all.
+--
 -- gamelog_module mirrors handle_carrier_death's override: the final point must
 -- land in the same buffer as the event that ends the run, not a different one.
 local function end_carrier_run(clientNum, gamelog_module)
     local gate = _carrier_gates[clientNum]
     _carrier_gates[clientNum] = nil
 
+    -- Validate before any of the emit-side early returns: the position is the
+    -- return value and callers need it whether or not telemetry is collected.
+    local pos = plausible_origin(et.gentity_get(clientNum, "r.currentOrigin"),
+                                gate and gate:last_emitted())
+    if not pos then return nil end
+
     local gl = gamelog_module or gamelog_ref
-    if not gate or not _collect_telemetry or not _collect_gamelog or not gl then return end
+    if not gate or not _collect_telemetry or not _collect_gamelog or not gl then return pos end
 
     local obj_name = objective_carriers.players[clientNum]
     local entry    = players_ref.guids[clientNum]
-    if not obj_name or not entry or not entry.guid or entry.guid == "WORLD" then return end
-
-    local pos = et.gentity_get(clientNum, "r.currentOrigin")
-    if not pos then return end
+    if not obj_name or not entry or not entry.guid or entry.guid == "WORLD" then return pos end
 
     -- Nothing to close out when the run already ended on a vertex (a parked
     -- carrier whose heartbeat just fired at this exact spot).
     local last = gate:last_emitted()
-    if last and utils.distance3d_units(last, pos) < 1 then return end
+    if last and utils.distance3d_units(last, pos) < 1 then return pos end
 
-    gl.carrier_pos(entry.guid, obj_name, utils.fmt_pos(pos), et.trap_Milliseconds())
+    gl.carrier_pos(entry.guid, obj_name, utils.fmt_pos(pos), et.trap_Milliseconds(),
+        _carrier_run_id[clientNum])
+    return pos
 end
 
 
@@ -206,6 +253,13 @@ local function update_objective_state(obj_name, action, guid, normalized_text)
     objective_states[obj_name].timestamp   = ts
     objective_states[obj_name].last_action = action
 
+    -- Rebuilding clears any remembered charge position: the next destruction of
+    -- this objective is a new charge, and must not inherit the old one's
+    -- coordinate. Handled here rather than at the four construct call sites.
+    if action == "constructed" then
+        objective_states[obj_name].plant_pos = nil
+    end
+
     if normalized_text then
         objective_states[obj_name].last_announce = normalized_text
     end
@@ -253,6 +307,27 @@ local function find_nearest_players(coordinates, team)
 end
 
 
+-- Credit a flag capture to every player the announce implicates. Each gets their
+-- own origin as pos, and they share the checkpoint's position as flag_pos --
+-- credit is proximity-based, so pos says who was there and flag_pos says where
+-- "there" was. Shared by the allies, axis and named-flag branches, which differ
+-- only in which team is searched.
+local function credit_flag_capture(flag_name, flag_coordinates, team)
+    local flag_pos = utils.fmt_pos(parse_coords(flag_coordinates))
+
+    for _, cnum in ipairs(find_nearest_players(flag_coordinates, team)) do
+        local guid = players_ref.guids[cnum] and players_ref.guids[cnum].guid
+        if guid then
+            record_obj_stat(guid, "obj_flagcaptured", flag_name)
+            if _collect_gamelog and gamelog_ref then
+                gamelog_ref.obj_flag_captured(guid, flag_name,
+                    utils.fmt_pos(et.gentity_get(cnum, "r.currentOrigin")), flag_pos)
+            end
+        end
+    end
+end
+
+
 local function get_flag_coordinates()
     local flags = {}
     for i = 64, 1021 do
@@ -277,14 +352,29 @@ local function get_flag_coordinates()
 end
 
 
-local function emit_destroyed(guid, obj_name, normalized_text)
+-- entity_pos is supplied by the announce-only path, which knows the entity that
+-- was destroyed; the Objective_Destroyed path has no entity but does have a
+-- charge, so it falls back to the plant position.
+local function emit_destroyed(guid, obj_name, normalized_text, entity_pos)
     if guid then
         record_obj_stat(guid, "obj_destroyed", obj_name)
         if _collect_gamelog and gamelog_ref then
-            gamelog_ref.objective("obj_destroyed", guid, obj_name)
+            -- Never the attributed player's live origin: a dynamite destruction
+            -- fires ~30s after the plant (karsiah r1: planted 3119603, destroyed
+            -- 3149585) and by then the planter is usually dead or respawned, so
+            -- their origin would put the marker on a spawn point. The charge's
+            -- own position, remembered at plant time, is where it went off.
+            local state = objective_states[obj_name]
+            gamelog_ref.objective("obj_destroyed", guid, obj_name,
+                entity_pos or (state and state.plant_pos))
         end
     end
     update_objective_state(obj_name, "destroyed", nil, normalized_text)
+
+    -- The charge is spent either way; do not let a later destruction of the same
+    -- objective replay this one's coordinate.
+    local state = objective_states[obj_name]
+    if state then state.plant_pos = nil end
 end
 
 
@@ -293,17 +383,32 @@ end
 -- announce fires in the same frame as the killing blow.
 local function handle_buildable_destruction(obj_name, normalized_text)
     local current_time = et.trap_Milliseconds()
-    local guid
+    local guid, entnum
     for _, dmg in ipairs(recent_entity_damage) do
         if (current_time - dmg.timestamp) <= ENTITY_DAMAGE_WINDOW_MS then
             local entry = players_ref.guids[dmg.attacker]
             if entry and entry.guid and entry.guid ~= "WORLD" then
-                guid = entry.guid
+                guid   = entry.guid
+                entnum = dmg.entnum
                 break
             end
         end
     end
-    emit_destroyed(guid, obj_name, normalized_text)
+
+    -- These destructions have no charge to replay a position from, but the thing
+    -- destroyed is itself an entity and we already know which one: events.lua
+    -- filters et_Damage down to ET_CONSTRUCTIBLE before buffering it, so
+    -- dmg.entnum *is* the objective. Read its origin directly.
+    --
+    -- Deliberately not the attacker's position. It is a fair proxy for a satchel,
+    -- which has to be placed on the target, but not for the panzerfaust or tank
+    -- shell that can take a command post from across the map.
+    local pos
+    if entnum then
+        pos = utils.fmt_pos(plausible_origin(et.gentity_get(entnum, "r.currentOrigin")))
+    end
+
+    emit_destroyed(guid, obj_name, normalized_text, pos)
 end
 
 
@@ -361,6 +466,29 @@ local function handle_dynamite_event(text, event_type, action_name)
     local guid            = entry.guid
     local normalized_text = utils.normalize(event_text:match("^%s*(.-)%s*$") or event_text)
 
+    -- Both match branches below emit identically; only the pattern source differs.
+    local function emit(obj_name)
+        local stat_key = "obj_" .. action_name
+        record_obj_stat(guid, stat_key, obj_name)
+        update_objective_state(obj_name, action_name, entry)
+
+        -- The planter/defuser is standing at the dynamite, so their origin is
+        -- the objective's location. Remember it on a plant: obj_destroyed fires
+        -- ~30s later, by which time the planter is usually dead or respawned
+        -- elsewhere and their live origin says nothing about where the charge
+        -- went off. A defuse removes the charge, so the stored position goes
+        -- with it.
+        local pos = et.gentity_get(id, "r.currentOrigin")
+        local state = objective_states[obj_name]
+        if state then
+            state.plant_pos = (action_name == "planted") and utils.fmt_pos(pos) or nil
+        end
+
+        if _collect_gamelog and gamelog_ref then
+            gamelog_ref.objective(stat_key, guid, obj_name, utils.fmt_pos(pos))
+        end
+    end
+
     if _common_buildables then
         for obj_name, common_cfg in pairs(_common_buildables) do
             if _map_config.buildables and _map_config.buildables[obj_name] then
@@ -373,12 +501,7 @@ local function handle_dynamite_event(text, event_type, action_name)
                         end
                     end
                     if matched then
-                        local stat_key = "obj_" .. action_name
-                        record_obj_stat(guid, stat_key, obj_name)
-                        update_objective_state(obj_name, action_name, entry)
-                        if _collect_gamelog and gamelog_ref then
-                            gamelog_ref.objective(stat_key, guid, obj_name)
-                        end
+                        emit(obj_name)
                         return
                     end
                 end
@@ -390,12 +513,7 @@ local function handle_dynamite_event(text, event_type, action_name)
         for obj_name, obj_cfg in pairs(_map_config.buildables) do
             if type(obj_cfg) ~= "boolean" and obj_cfg.plant_pattern and obj_cfg.plant_pattern ~= "" then
                 if string.find(normalized_text, utils.normalize(obj_cfg.plant_pattern)) then
-                    local stat_key = "obj_" .. action_name
-                    record_obj_stat(guid, stat_key, obj_name)
-                    update_objective_state(obj_name, action_name, entry)
-                    if _collect_gamelog and gamelog_ref then
-                        gamelog_ref.objective(stat_key, guid, obj_name)
-                    end
+                    emit(obj_name)
                     break
                 end
             end
@@ -643,32 +761,14 @@ function objectives.handle_print(text)
             local allies_cfg = _map_config.flags.allies_flag
             if allies_cfg and allies_cfg.flag_pattern and allies_cfg.flag_coordinates
             and string.find(normalized, utils.normalize(allies_cfg.flag_pattern)) then
-                local nearest = find_nearest_players(allies_cfg.flag_coordinates, et.TEAM_ALLIES)
-                for _, cnum in ipairs(nearest) do
-                    local guid = players_ref.guids[cnum] and players_ref.guids[cnum].guid
-                    if guid then
-                        record_obj_stat(guid, "obj_flagcaptured", "allies_flag")
-                        if _collect_gamelog and gamelog_ref then
-                            gamelog_ref.obj_flag_captured(guid, "allies_flag")
-                        end
-                    end
-                end
+                credit_flag_capture("allies_flag", allies_cfg.flag_coordinates, et.TEAM_ALLIES)
             end
 
             -- Axis flag
             local axis_cfg = _map_config.flags.axis_flag
             if axis_cfg and axis_cfg.flag_pattern and axis_cfg.flag_coordinates
             and string.find(normalized, utils.normalize(axis_cfg.flag_pattern)) then
-                local nearest = find_nearest_players(axis_cfg.flag_coordinates, et.TEAM_AXIS)
-                for _, cnum in ipairs(nearest) do
-                    local guid = players_ref.guids[cnum] and players_ref.guids[cnum].guid
-                    if guid then
-                        record_obj_stat(guid, "obj_flagcaptured", "axis_flag")
-                        if _collect_gamelog and gamelog_ref then
-                            gamelog_ref.obj_flag_captured(guid, "axis_flag")
-                        end
-                    end
-                end
+                credit_flag_capture("axis_flag", axis_cfg.flag_coordinates, et.TEAM_AXIS)
             end
 
             -- Generic named flags in config
@@ -678,16 +778,7 @@ function objectives.handle_print(text)
                 and string.find(normalized, utils.normalize(flag_cfg.flag_pattern)) then
                     -- Closest player from either team
                     for _, team in ipairs({ et.TEAM_ALLIES, et.TEAM_AXIS }) do
-                        local nearest = find_nearest_players(flag_cfg.flag_coordinates, team)
-                        for _, cnum in ipairs(nearest) do
-                            local guid = players_ref.guids[cnum] and players_ref.guids[cnum].guid
-                            if guid then
-                                record_obj_stat(guid, "obj_flagcaptured", flag_name)
-                                if _collect_gamelog and gamelog_ref then
-                                    gamelog_ref.obj_flag_captured(guid, flag_name)
-                                end
-                            end
-                        end
+                        credit_flag_capture(flag_name, flag_cfg.flag_coordinates, team)
                     end
                 end
             end
@@ -747,11 +838,18 @@ function objectives.handle_print(text)
                     if entry and entry.guid and entry.guid ~= "WORLD" then
                         local event = state.dropped and "obj_repickup" or "obj_taken"
                         record_obj_stat(entry.guid, event, obj.name)
+
+                        -- A pickup is the only thing that opens a run, so it is
+                        -- the only place an id is allocated.
+                        _run_seq = _run_seq + 1
+                        _carrier_run_id[touch_id] = _run_seq
+
                         if _collect_gamelog and gamelog_ref then
                             -- pos anchors the route: this is the exact start of
                             -- the run, a frame ahead of the first carrier_pos.
                             local pos = et.gentity_get(touch_id, "r.currentOrigin")
-                            gamelog_ref.objective(event, entry.guid, obj.name, utils.fmt_pos(pos))
+                            gamelog_ref.objective(event, entry.guid, obj.name,
+                                utils.fmt_pos(pos), _run_seq)
                         end
 
                         -- Fresh gate per run, so a re-pickup never continues the
@@ -760,6 +858,11 @@ function objectives.handle_print(text)
 
                         objective_carriers.players[touch_id] = obj.name
                         state.carrier_id = touch_id
+                        -- The previous run is no longer the one a return would
+                        -- terminate; this one is, once it ends. Its resting place
+                        -- goes with it -- the objective is off the ground now.
+                        state.last_run   = nil
+                        state.last_pos   = nil
                     end
 
                     state.dropped     = false
@@ -773,14 +876,38 @@ function objectives.handle_print(text)
                     local entry = touch_id and players_ref.guids[touch_id]
                     local returner_guid = entry and entry.guid or "WORLD"
 
+                    -- A return names the run it terminated, which is almost never
+                    -- a live one: an objective is returned while it lies on the
+                    -- ground, so its run already closed at the obj_dropped and
+                    -- state.carrier_id is nil by now. state.last_run is that run,
+                    -- and it is the useful link -- it says this carry ended in a
+                    -- reset rather than in someone picking the objective back up.
+                    -- The carrier_id branch is defensive, for a return that
+                    -- somehow lands while a carry is still in flight.
                     local state = objective_states[obj.name]
+                    local ended_run = state and state.last_run
                     if state and state.carrier_id then
+                        ended_run = _carrier_run_id[state.carrier_id]
+                        -- Note the two positions differ: end_carrier_run's is
+                        -- where the carry stopped, pos below is where the
+                        -- returner was standing.
                         end_carrier_run(state.carrier_id)
                     end
 
                     record_obj_stat(returner_guid, "obj_returned", obj.name)
                     if _collect_gamelog and gamelog_ref then
-                        gamelog_ref.objective("obj_returned", returner_guid, obj.name)
+                        -- The returner's origin is where the objective was lying,
+                        -- since they had to reach it to return it. A WORLD return
+                        -- has no actor -- the objective timed out back to its
+                        -- stand after being dropped and left -- so fall back to
+                        -- where the carry ended, which is where it sat until the
+                        -- timer ran out. Same place, one of them observed via a
+                        -- player and the other remembered.
+                        local pos = touch_id
+                            and utils.fmt_pos(et.gentity_get(touch_id, "r.currentOrigin"))
+                            or (state and state.last_pos)
+                        gamelog_ref.objective("obj_returned", returner_guid, obj.name,
+                            pos, ended_run)
                     end
 
                     if state then
@@ -845,7 +972,10 @@ function objectives.handle_print(text)
 
                 record_obj_stat(guid, "obj_repaired", objective_name)
                 if _collect_gamelog and gamelog_ref then
-                    gamelog_ref.objective("obj_repaired", guid, objective_name)
+                    -- The engineer is standing at what they are repairing.
+                    local pos = et.gentity_get(id, "r.currentOrigin")
+                    gamelog_ref.objective("obj_repaired", guid, objective_name,
+                        utils.fmt_pos(pos))
                 end
             end
         end
@@ -876,17 +1006,19 @@ function objectives.handle_print(text)
                 and string.find(first_sentence, utils.normalize(obj.secured_pattern)) then
                     for carrier_id, carried_obj in pairs(objective_carriers.players) do
                         if carried_obj == obj.name then
-                            end_carrier_run(carrier_id)
+                            -- pos closes the run: paired with obj_taken's start
+                            -- coordinate it bounds the route exactly. Taken from
+                            -- end_carrier_run so it is the same validated
+                            -- reading as the run's final carrier_pos.
+                            local run = _carrier_run_id[carrier_id]
+                            local pos = end_carrier_run(carrier_id)
 
                             local entry = players_ref.guids[carrier_id]
                             if entry then
                                 record_obj_stat(entry.guid, "obj_secured", obj.name)
                                 if _collect_gamelog and gamelog_ref then
-                                    -- pos closes the run: paired with obj_taken's
-                                    -- start coordinate it bounds the route exactly.
-                                    local pos = et.gentity_get(carrier_id, "r.currentOrigin")
                                     gamelog_ref.objective("obj_secured", entry.guid, obj.name,
-                                        utils.fmt_pos(pos))
+                                        utils.fmt_pos(pos), run)
                                 end
                             end
 
@@ -898,6 +1030,7 @@ function objectives.handle_print(text)
                             if secured_state then
                                 secured_state.carrier_id = nil
                                 secured_state.dropped    = false
+                                secured_state.last_run   = run
                             end
                             break
                         end
@@ -921,7 +1054,8 @@ function objectives.handle_carrier_death(target, attacker, mod, gamelog_module)
 
             local gl = gamelog_module or gamelog_ref
 
-            end_carrier_run(target, gl)
+            local run = _carrier_run_id[target]
+            local pos = end_carrier_run(target, gl)
 
             if killer_entry and killer_entry.guid and killer_entry.guid ~= "WORLD"
             and attacker ~= target
@@ -932,20 +1066,26 @@ function objectives.handle_carrier_death(target, attacker, mod, gamelog_module)
                     objective = obj_name,
                 })
                 if _collect_gamelog and gl then
-                    gl.obj_carrier_killed(killer_entry.guid, victim_guid, obj_name, mod)
+                    -- victim_pos is `pos` from end_carrier_run: where the carry
+                    -- stopped, and the same reading the closing carrier_pos and
+                    -- obj_dropped use. The killer's own origin is read fresh.
+                    gl.obj_carrier_killed(killer_entry.guid, victim_guid, obj_name, mod, run,
+                        utils.fmt_pos(et.gentity_get(attacker, "r.currentOrigin")),
+                        utils.fmt_pos(pos))
                 end
             end
 
             record_obj_stat(victim_guid, "obj_dropped", obj_name)
             if _collect_gamelog and gl then
-                local pos = et.gentity_get(target, "r.currentOrigin")
-                gl.obj_dropped(victim_guid, obj_name, utils.fmt_pos(pos))
+                gl.obj_dropped(victim_guid, obj_name, utils.fmt_pos(pos), run)
             end
 
             objective_carriers.players[target] = nil
             state.carrier_id  = nil
             state.dropped     = true
             state.last_action = "dropped"
+            state.last_run    = run
+            state.last_pos    = utils.fmt_pos(pos)
             state.timestamp   = et.trap_Milliseconds()
         end
     end
@@ -959,18 +1099,24 @@ function objectives.handle_disconnect(clientNum)
             local entry = players_ref.guids[clientNum]
             local guid  = entry and entry.guid or "WORLD"
 
-            end_carrier_run(clientNum)
+            -- The disconnect path is exactly why end_carrier_run validates: the
+            -- entity may already be torn down here, and a zeroed origin would
+            -- put both the closing sample and this obj_dropped at the world
+            -- origin. A nil pos is the correct outcome, not a fabricated one.
+            local run = _carrier_run_id[clientNum]
+            local pos = end_carrier_run(clientNum)
 
             record_obj_stat(guid, "obj_dropped", obj_name)
             if _collect_gamelog and gamelog_ref then
-                local pos = et.gentity_get(clientNum, "r.currentOrigin")
-                gamelog_ref.obj_dropped(guid, obj_name, utils.fmt_pos(pos))
+                gamelog_ref.obj_dropped(guid, obj_name, utils.fmt_pos(pos), run)
             end
 
             objective_carriers.players[clientNum] = nil
             state.carrier_id  = nil
             state.dropped     = true
             state.last_action = "dropped"
+            state.last_run    = run
+            state.last_pos    = utils.fmt_pos(pos)
             state.timestamp   = et.trap_Milliseconds()
         end
     end
@@ -1007,12 +1153,12 @@ local function check_manual_drops()
                 local entry = players_ref.guids[clientNum]
                 local guid  = entry and entry.guid or "WORLD"
 
-                end_carrier_run(clientNum)
+                local run = _carrier_run_id[clientNum]
+                local pos = end_carrier_run(clientNum)
 
                 record_obj_stat(guid, "obj_dropped", obj_name)
                 if _collect_gamelog and gamelog_ref then
-                    local pos = et.gentity_get(clientNum, "r.currentOrigin")
-                    gamelog_ref.obj_dropped(guid, obj_name, utils.fmt_pos(pos))
+                    gamelog_ref.obj_dropped(guid, obj_name, utils.fmt_pos(pos), run)
                 end
 
                 objective_carriers.players[clientNum] = nil
@@ -1021,6 +1167,8 @@ local function check_manual_drops()
                     state.carrier_id  = nil
                     state.dropped     = true
                     state.last_action = "dropped"
+                    state.last_run    = run
+                    state.last_pos    = utils.fmt_pos(pos)
                     state.timestamp   = et.trap_Milliseconds()
                 end
             end
@@ -1032,6 +1180,29 @@ end
 -- Per-frame carrier upkeep: manual-drop detection (always) and carrier
 -- position telemetry (collect_vehicle_telemetry, vertex-gated).
 function objectives.tick(now)
+    -- Reap run state for players who no longer carry anything (killed, secured,
+    -- dropped, returned, disconnected) so nothing leaks across runs.
+    --
+    -- Reaped here rather than in end_carrier_run because that function runs
+    -- *before* the event which ends the run in all five exit paths -- clearing
+    -- the id there would strip it off the very event that needs it. Those events
+    -- all fire from handle_print / handle_carrier_death / handle_disconnect, so
+    -- by the time any tick runs they have already read what they needed.
+    --
+    -- Ahead of the no-carriers early return, or the round's final carry would
+    -- never be reaped, and ahead of the telemetry gate, or run ids would leak
+    -- whenever telemetry is switched off.
+    for clientNum in pairs(_carrier_gates) do
+        if objective_carriers.players[clientNum] == nil then
+            _carrier_gates[clientNum] = nil
+        end
+    end
+    for clientNum in pairs(_carrier_run_id) do
+        if objective_carriers.players[clientNum] == nil then
+            _carrier_run_id[clientNum] = nil
+        end
+    end
+
     if next(objective_carriers.players) == nil then return end
 
     check_manual_drops()
@@ -1053,17 +1224,10 @@ function objectives.tick(now)
                 -- and timestamp have to describe the same instant.
                 local vertex, vertex_ms = gate:sample(pos, now)
                 if vertex then
-                    gamelog_ref.carrier_pos(entry.guid, obj_name, utils.fmt_pos(vertex), vertex_ms)
+                    gamelog_ref.carrier_pos(entry.guid, obj_name, utils.fmt_pos(vertex),
+                        vertex_ms, _carrier_run_id[clientNum])
                 end
             end
-        end
-    end
-
-    -- Drop gates for players who no longer carry anything (killed, secured,
-    -- dropped, disconnected) so state cannot leak across runs.
-    for clientNum in pairs(_carrier_gates) do
-        if objective_carriers.players[clientNum] == nil then
-            _carrier_gates[clientNum] = nil
         end
     end
 end
@@ -1098,6 +1262,10 @@ function objectives.reset()
     pending_flag_touch   = nil
     recent_entity_damage = {}
     _carrier_gates       = {}
+    _carrier_run_id      = {}
+    -- Run ids restart at 1 each round: they are only ever meaningful within the
+    -- round they were emitted in, which is the scope a gamelog covers.
+    _run_seq             = 0
     _map_config          = nil
     _common_buildables   = nil
 end
