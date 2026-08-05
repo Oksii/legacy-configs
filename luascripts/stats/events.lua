@@ -20,7 +20,7 @@ local ET_CONSTRUCTIBLE = 33  -- entityType_t: engineer build/destroy objectives
                              -- et.* constant, so matched numerically.
 
 local _collect_gamelog      = true
-local _collect_weapon_fire  = false
+local _collect_weapon_fire  = nil    -- nil = off, true = every weapon, table = set of ids
 local _collect_obj_damage   = false
 local _maxClients           = 64
 
@@ -60,7 +60,7 @@ function events.init(cfg, log_ref, players_module, gamelog_module, objectives_mo
     vehicle_ref    = vehicle_module
 
     _collect_gamelog     = cfg.collect_gamelog
-    _collect_weapon_fire = cfg.collect_weapon_fire or false
+    _collect_weapon_fire = cfg.collect_weapon_fire or nil
     _collect_obj_damage  = cfg.collect_vehicle_damage or false
     _maxClients          = cfg.maxClients or 64
 end
@@ -289,8 +289,10 @@ function events.on_client_command(clientNum, command)
 end
 
 
+-- Filtered by the resolved COLLECT_WEAPON_FIRE spec (see stats/weapons.lua).
 function events.on_weapon_fire(clientNum, weapon)
     if not _collect_weapon_fire or not gamelog_ref then return 0 end
+    if _collect_weapon_fire ~= true and not _collect_weapon_fire[weapon] then return 0 end
 
     local entry = players_ref.guids[clientNum]
     if not entry or entry.guid == "WORLD" then return 0 end

@@ -533,7 +533,7 @@ the same on all of them.
 | `victim_pos` | `"x y z"` shoved player origin at moment of shove |
 | `victim_stance` | Shoved player stance snapshot |
 
-**`weapon_fire`** — every weapon shot; only present when `COLLECT_WEAPON_FIRE = true`
+**`weapon_fire`** — a weapon shot; present only for the weapons selected by `COLLECT_WEAPON_FIRE`
 
 | Field | Description |
 |-------|-------------|
@@ -1078,7 +1078,7 @@ The match-ID endpoint is called as `GET {API_URL_MATCHID}/{server_ip}/{server_po
 | `LOGGING_ENABLED` | `false` | Enable/disable the log file entirely |
 | `LOG_LEVEL` | `"info"` | `"info"` logs key lifecycle events. `"debug"` logs every per-event trace (verbose, high volume — only use for troubleshooting). |
 | `COLLECT_GAMELOG` | `true` | Record the in-round event timeline. Disabling this also suppresses kills, damage, chat, objectives, revives, class changes, and shoves from the output. |
-| `COLLECT_WEAPON_FIRE` | `false` | Record every weapon shot (`weapon_fire` gamelog events). **Very high volume** — one entry per bullet/shell fired by every player. Only enable for short controlled analysis sessions, never in normal production use. Covers both player weapons and fixed MG42s. |
+| `COLLECT_WEAPON_FIRE` | `"spam,utility"` | Which weapon shots to record as `weapon_fire` gamelog events. A comma-separated spec — see [Weapon-fire filter](#weapon-fire-filter) below. Covers both player weapons and fixed MG42s. |
 | `COLLECT_OBJ_STATS` | `true` | Objective stats in `player_stats` (plant/defuse/destroy/etc.) |
 | `COLLECT_SHOVE_STATS` | `true` | Shove tracking in `player_stats` and `gamelog` |
 | `COLLECT_MOVEMENT_STATS` | `true` | Distance travelled and speed in `player_stats` |
@@ -1087,6 +1087,35 @@ The match-ID endpoint is called as `GET {API_URL_MATCHID}/{server_ip}/{server_po
 | `COLLECT_VEHICLE_TELEMETRY` | `true` | Path position samples for moving vehicles (`vehicle_pos`) and objective carriers (`carrier_pos`), enabling route replay. Sampled per frame; volume is independent of `sv_fps` in both cases. **Vehicles** emit only where the path turns — at or below one point per second (~200 events per escort round). **Carriers** additionally hold a 10 Hz floor while moving (2.7.2+), giving ~32 units between samples so carry distance is measured rather than estimated: expect roughly `10 x carry_seconds` per round (~2100 on the heaviest round measured, versus 423 under pure vertex gating), and 1 Hz while a carrier stands still. |
 | `COLLECT_VEHICLE_DAMAGE` | `true` | Per-player damage tracking for damageable objectives: `vehicle_damage` events + `player_stats.obj_vehicle.damage` / `.repairs` for vehicles, and `obj_damage` events for `ET_CONSTRUCTIBLE` objectives (command posts, breach walls, barriers). Corpse gibs and decorative breakables are filtered out; damage is clamped to remaining health. Trucks are not damageable and never emit these. |
 
+#### Weapon-fire filter
+
+`COLLECT_WEAPON_FIRE` / `STATS_API_WEAPON_FIRE` selects *which* weapons produce
+`weapon_fire` events. Recording every bullet is tens of thousands of events per round and
+is not production-viable; recording only the projectile weapons is a few hundred and is.
+
+```
+STATS_API_WEAPON_FIRE=spam,utility        # default
+STATS_API_WEAPON_FIRE=false               # off. "none", "off", "0" also work
+STATS_API_WEAPON_FIRE=true                # every weapon. "all" also works. Very high volume
+STATS_API_WEAPON_FIRE=spam                # non-hitscan combat weapons
+STATS_API_WEAPON_FIRE=hitscan             # trace weapons only
+STATS_API_WEAPON_FIRE=5,34,53             # explicit weapon ids
+STATS_API_WEAPON_FIRE=panzerfaust,mortar  # explicit weapon names
+STATS_API_WEAPON_FIRE=spam,-flamethrower  # a class minus one member
+```
+
+Tokens are comma-separated, trimmed and case-insensitive. A leading `-` negates. All
+positives are unioned first and all negatives subtracted afterwards, so **token order
+never matters**. Names are the `WP_` constant lowercased with the prefix stripped
+(`panzerfaust`, `grenade_launcher`, `mortar_set`) — no aliases.
+
+| Class | Weapons |
+|-------|---------|
+| `spam` | Panzerfaust, bazooka, artillery, airstrike call, all four mortars, map mortar, both hand grenades, both rifle grenades, flamethrower, dynamite, landmine |
+| `hitscan` | Every trace weapon: SMGs, pistols and akimbos, rifles and scoped rifles, MG42/Browning mobile and deployed, the fixed MG42, both knives |
+| `utility` | Syringe, satchel + detonator, covert smoke |
+| `support` | Ammo pack, medkit, binoculars, pliers, adrenaline |
+| `all`     | Everything | 
 ### [OUTPUT]
 
 | Variable | Default | Description |
