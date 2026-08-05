@@ -1078,7 +1078,7 @@ The match-ID endpoint is called as `GET {API_URL_MATCHID}/{server_ip}/{server_po
 | `LOGGING_ENABLED` | `false` | Enable/disable the log file entirely |
 | `LOG_LEVEL` | `"info"` | `"info"` logs key lifecycle events. `"debug"` logs every per-event trace (verbose, high volume — only use for troubleshooting). |
 | `COLLECT_GAMELOG` | `true` | Record the in-round event timeline. Disabling this also suppresses kills, damage, chat, objectives, revives, class changes, and shoves from the output. |
-| `COLLECT_WEAPON_FIRE` | `"spam,utility"` | Which weapon shots to record as `weapon_fire` gamelog events. A comma-separated spec — see [Weapon-fire filter](#weapon-fire-filter) below. Covers both player weapons and fixed MG42s. |
+| `COLLECT_WEAPON_FIRE` | `"spam,utility,support,-pliers"` | Which weapon shots to record as `weapon_fire` gamelog events. A comma-separated spec — see [Weapon-fire filter](#weapon-fire-filter) below. Covers both player weapons and fixed MG42s. |
 | `COLLECT_OBJ_STATS` | `true` | Objective stats in `player_stats` (plant/defuse/destroy/etc.) |
 | `COLLECT_SHOVE_STATS` | `true` | Shove tracking in `player_stats` and `gamelog` |
 | `COLLECT_MOVEMENT_STATS` | `true` | Distance travelled and speed in `player_stats` |
@@ -1094,14 +1094,14 @@ The match-ID endpoint is called as `GET {API_URL_MATCHID}/{server_ip}/{server_po
 is not production-viable; recording only the projectile weapons is a few hundred and is.
 
 ```
-STATS_API_WEAPON_FIRE=spam,utility        # default
-STATS_API_WEAPON_FIRE=false               # off. "none", "off", "0" also work
-STATS_API_WEAPON_FIRE=true                # every weapon. "all" also works. Very high volume
-STATS_API_WEAPON_FIRE=spam                # non-hitscan combat weapons
-STATS_API_WEAPON_FIRE=hitscan             # trace weapons only
-STATS_API_WEAPON_FIRE=5,34,53             # explicit weapon ids
-STATS_API_WEAPON_FIRE=panzerfaust,mortar  # explicit weapon names
-STATS_API_WEAPON_FIRE=spam,-flamethrower  # a class minus one member
+STATS_API_WEAPON_FIRE=spam,utility,support,-pliers # default
+STATS_API_WEAPON_FIRE=false                        # off. "none", "off", "0" also work
+STATS_API_WEAPON_FIRE=true                         # every weapon. "all" also works. Very high volume
+STATS_API_WEAPON_FIRE=spam                         # non-hitscan combat weapons
+STATS_API_WEAPON_FIRE=hitscan                      # trace weapons only
+STATS_API_WEAPON_FIRE=5,34,53                      # explicit weapon ids
+STATS_API_WEAPON_FIRE=panzerfaust,mortar           # explicit weapon names
+STATS_API_WEAPON_FIRE=spam,-flamethrower           # a class minus one member
 ```
 
 Tokens are comma-separated, trimmed and case-insensitive. A leading `-` negates. All
