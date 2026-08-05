@@ -1,6 +1,7 @@
 name: Sync ETL Stats API Branch
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -47,10 +48,24 @@ jobs:
 
           # Phase 2: merge main, resolving all conflicts by taking theirs
           if ! git merge origin/main -m "Sync: Merge changes from main branch"; then
-            echo "Merge conflicts detected. Resolving by taking main's version..."
+            echo "Merge conflicts detected. Content conflicts take main; deletions are left as-is on each side..."
             while IFS= read -r file; do
-              git checkout --theirs "$file"
-              git add "$file"
+              ours=false; theirs=false
+              git rev-parse --verify --quiet "HEAD:$file" >/dev/null && ours=true
+              git rev-parse --verify --quiet "MERGE_HEAD:$file" >/dev/null && theirs=true
+              if [ "$ours" = true ] && [ "$theirs" = true ]; then
+                # modified on both sides -> take main's content
+                git checkout --theirs -- "$file"
+                git add -- "$file"
+              elif [ "$ours" = true ]; then
+                # deleted in main, still present here -> keep this branch's copy
+                echo "Deleted in main, keeping branch copy: $file"
+                git add -- "$file"
+              else
+                # deleted on this branch, modified in main -> keep it deleted
+                echo "Deleted on this branch, keeping deletion: $file"
+                git rm -f --ignore-unmatch -- "$file" >/dev/null
+              fi
             done < <(git diff --name-only --diff-filter=U)
             git commit -m "Sync: Merge changes from main branch (with conflict resolution)"
           fi
