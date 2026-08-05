@@ -1,6 +1,6 @@
 --[[
     stats.lua  — root module for ETLegacy game stats collection
-    Version: 2.7.2
+    Version: 2.7.3
 
     All user-facing settings live in the CONFIGURATION block below.
     config.toml is kept only for map-specific patterns and common buildables.
@@ -31,8 +31,15 @@ local COLLECT_GAMELOG           = true   -- in-round event timeline (kills, dama
 local COLLECT_VEHICLE_STATS     = true   -- escort vehicle tracking: per-player escort credit + timeline events
 local COLLECT_VEHICLE_TELEMETRY = true   -- path-vertex position samples for vehicle + objective carriers (~200 events/round)
 local COLLECT_VEHICLE_DAMAGE    = true   -- per-player vehicle/objective damage + repair tally events
-local COLLECT_WEAPON_FIRE       = false  -- log every weapon shot (et_WeaponFire + et_FixedMGFire)
-                                         -- WARNING: very high volume -- not recommended for normal use.
+-- Which weapon shots to log (et_WeaponFire + et_FixedMGFire). Comma-separated spec:
+--   "false"/"none"      off                     "true"/"all"   every weapon (very high volume)
+--   "spam"              non-hitscan combat      "hitscan"      trace weapons only
+--   "utility"           syringe/satchel/smoke   "support"      ammo/medkit/pliers/binocs/adrenaline
+--   "5,34,panzerfaust"  explicit ids or names   "spam,-flamethrower"  a class minus a member
+-- Positives are unioned, then negatives subtracted; token order is irrelevant.
+-- The default "spam,utility" is a few hundred events per round and production-safe;
+-- "false" opts out entirely. See stats/weapons.lua for the table.
+local COLLECT_WEAPON_FIRE       = "spam,utility"
 
 -- [OUTPUT]
 local DUMP_STATS_DATA           = false  -- write indented JSON to JSON_FILEPATH
@@ -57,8 +64,8 @@ local AUTO_CONFIG_MAP = {
 }
 
 -- [AUTO-START TIMING]
-local AUTO_START_WAIT_INITIAL   = 300    -- seconds  (First Round, 7min)
-local AUTO_START_WAIT           = 120    -- seconds  (Consecutive Rounds, 3 min)
+local AUTO_START_WAIT_INITIAL   = 420    -- seconds  (First Round, 7min)
+local AUTO_START_WAIT           = 180    -- seconds  (Consecutive Rounds, 3 min)
 
 -- [AUTO-START PHASED MODE]
 -- "simple"  → single window using AUTO_START_WAIT_INITIAL / AUTO_START_WAIT (default).
@@ -76,7 +83,7 @@ local SAVE_STATS_DELAY          = 3000   -- ms after intermission before SaveSta
 
 -- [MODULE]
 local MODNAME                   = "stats"
-local VERSION                   = "2.7.2"
+local VERSION                   = "2.7.3"
 
 -- [ENV OVERRIDES]
 -- Any setting above can be overridden by an environment variable of the same
@@ -104,7 +111,7 @@ COLLECT_STANCE_STATS            = env_bool("STATS_API_STANCESTATS",     COLLECT_
 COLLECT_VEHICLE_STATS           = env_bool("STATS_API_VEHICLESTATS",    COLLECT_VEHICLE_STATS)
 COLLECT_VEHICLE_TELEMETRY       = env_bool("STATS_API_VEHICLE_TELEMETRY", COLLECT_VEHICLE_TELEMETRY)
 COLLECT_VEHICLE_DAMAGE          = env_bool("STATS_API_VEHICLE_DAMAGE",  COLLECT_VEHICLE_DAMAGE)
-COLLECT_WEAPON_FIRE             = env_bool("STATS_API_WEAPON_FIRE",     COLLECT_WEAPON_FIRE)
+COLLECT_WEAPON_FIRE             = os.getenv("STATS_API_WEAPON_FIRE")    or COLLECT_WEAPON_FIRE
 DUMP_STATS_DATA                 = env_bool("STATS_API_DUMPJSON",        DUMP_STATS_DATA)
 SUBMIT_TO_API                   = env_bool("STATS_SUBMIT",              SUBMIT_TO_API)
 AUTO_RENAME                     = env_bool("STATS_AUTO_RENAME",         AUTO_RENAME)
@@ -151,6 +158,7 @@ local gamelog                   = gs_require("gamelog")
 local events                    = gs_require("events")
 local objectives                = gs_require("objectives")
 local vehicle                   = gs_require("vehicle")
+local weapons                   = gs_require("weapons")
 local gather                    = gs_require("gather")
 local api                       = gs_require("api")
 local stats                     = gs_require("stats")
@@ -169,6 +177,7 @@ local next_store_time           = 0
 local level_time                = 0
 local _deferred_init_pending    = false
 local _ng_round_start_pending   = false
+local _weapon_fire_filter       = nil    -- resolved COLLECT_WEAPON_FIRE spec (see weapons.parse)
 local _was_paused               = false  -- tracks CS_SERVERTOGGLES pause bit across frames
 
 -- CS_SERVERTOGGLES pause flag: engine sets level.server_settings |= CV_SVS_PAUSE on pause.
@@ -198,7 +207,7 @@ local function build_cfg()
         collect_vehicle_stats   = COLLECT_VEHICLE_STATS,
         collect_vehicle_telemetry = COLLECT_VEHICLE_TELEMETRY,
         collect_vehicle_damage  = COLLECT_VEHICLE_DAMAGE,
-        collect_weapon_fire     = COLLECT_WEAPON_FIRE,
+        collect_weapon_fire     = _weapon_fire_filter,
         dump_stats_data         = DUMP_STATS_DATA,
         submit_to_api           = SUBMIT_TO_API,
         auto_rename             = AUTO_RENAME,
@@ -329,6 +338,13 @@ function et_InitGame()
     log_mod.buffer_start()
     server_ip, server_port = resolve_server_ip()
 
+    local wf_warnings
+    _weapon_fire_filter, wf_warnings = weapons.parse(COLLECT_WEAPON_FIRE)
+    for _, w in ipairs(wf_warnings) do
+        log_mod.write(string.format("STATS_API_WEAPON_FIRE: %s", w))
+        et.G_Print(string.format("[%s] STATS_API_WEAPON_FIRE: %s\n", MODNAME, w))
+    end
+
     -- Load map config
     local cfg_data, cfg_err = config_mod.load()
     if not cfg_data then
@@ -395,7 +411,12 @@ function et_InitGame()
         log_mod.debug(string.format("  collect_shove_stats : %s", bool(COLLECT_SHOVE_STATS)))
         log_mod.debug(string.format("  collect_movement    : %s", bool(COLLECT_MOVEMENT_STATS)))
         log_mod.debug(string.format("  collect_stance      : %s", bool(COLLECT_STANCE_STATS)))
-        log_mod.debug(string.format("  collect_weapon_fire : %s", bool(COLLECT_WEAPON_FIRE)))
+        local wf_n = weapons.count(_weapon_fire_filter)
+        log_mod.debug(string.format("  collect_weapon_fire : %s  -> %s",
+            COLLECT_WEAPON_FIRE,
+            _weapon_fire_filter == nil and "off"
+                or (_weapon_fire_filter == true and "all weapons"
+                    or string.format("%d weapon ids", wf_n))))
         log_mod.debug(string.format("  collect_vehicle     : %s  telemetry=%s damage=%s",
             bool(COLLECT_VEHICLE_STATS), bool(COLLECT_VEHICLE_TELEMETRY), bool(COLLECT_VEHICLE_DAMAGE)))
         log_mod.debug(string.format("  auto_rename         : %s", bool(AUTO_RENAME)))
@@ -608,24 +629,9 @@ function et_ClientUserinfoChanged(clientNum)
     end
 end
 
--- Notable weapons detectable at spawn via et.GetCurrentWeapon().
-local SPAWN_WEAPON_NAMES = {
-    [et.WP_PANZERFAUST]     = "panzerfaust",
-    [et.WP_FLAMETHROWER]    = "flamethrower",
-    [et.WP_MOBILE_MG42]     = "mobile_mg42",
-    [et.WP_MOBILE_BROWNING] = "mobile_browning",
-    [et.WP_BAZOOKA]         = "bazooka",
-    [et.WP_CARBINE]         = "carbine",
-    [et.WP_KAR98]           = "kar98",
-    [et.WP_STEN]            = "sten",
-    [et.WP_MP34]            = "mp34",
-    [et.WP_FG42]            = "fg42",
-    [et.WP_FG42_SCOPE]      = "fg42",
-    [et.WP_GARAND]          = "garand_sniper",
-    [et.WP_GARAND_SCOPE]    = "garand_sniper",
-    [et.WP_K43]             = "k43_sniper",
-    [et.WP_K43_SCOPE]       = "k43_sniper",
-}
+-- Notable weapons detectable at spawn via et.GetCurrentWeapon(). 
+-- Keyed by weapon id from stats/weapons.lua
+local SPAWN_WEAPON_NAMES = weapons.SPAWN_NAMES
 
 local CLASS_LOOKUP_SPAWN = {
     [0]="soldier",[1]="medic",[2]="engineer",[3]="fieldop",[4]="covertops"
