@@ -37,9 +37,7 @@ local COLLECT_VEHICLE_DAMAGE    = true   -- per-player vehicle/objective damage 
 --   "utility"           syringe/satchel/smoke   "support"      ammo/medkit/pliers/binocs/adrenaline
 --   "5,34,panzerfaust"  explicit ids or names   "spam,-flamethrower"  a class minus a member
 -- Positives are unioned, then negatives subtracted; token order is irrelevant.
--- The default "spam,utility" is a few hundred events per round and production-safe;
--- "false" opts out entirely. See stats/weapons.lua for the table.
-local COLLECT_WEAPON_FIRE       = "spam,utility"
+local COLLECT_WEAPON_FIRE       = "spam,utility,support,-pliers"
 
 -- [OUTPUT]
 local DUMP_STATS_DATA           = false  -- write indented JSON to JSON_FILEPATH
