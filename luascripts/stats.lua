@@ -1,6 +1,6 @@
 --[[
     stats.lua  — root module for ETLegacy game stats collection
-    Version: 2.7.3
+    Version: 2.8.0
 
     All user-facing settings live in the CONFIGURATION block below.
     config.toml is kept only for map-specific patterns and common buildables.
@@ -27,6 +27,7 @@ local COLLECT_OBJ_STATS         = true
 local COLLECT_SHOVE_STATS       = true
 local COLLECT_MOVEMENT_STATS    = true
 local COLLECT_STANCE_STATS      = true   -- prone / crouch / sprint time, etc.
+local COLLECT_ACTIVITY_STATS    = true   -- "actively involved" time: engaged vs idle camping
 local COLLECT_GAMELOG           = true   -- in-round event timeline (kills, damage, chat, objectives, etc.)
 local COLLECT_VEHICLE_STATS     = true   -- escort vehicle tracking: per-player escort credit + timeline events
 local COLLECT_VEHICLE_TELEMETRY = true   -- path-vertex position samples for vehicle + objective carriers (~200 events/round)
@@ -62,8 +63,8 @@ local AUTO_CONFIG_MAP = {
 }
 
 -- [AUTO-START TIMING]
-local AUTO_START_WAIT_INITIAL   = 420    -- seconds  (First Round, 7min)
-local AUTO_START_WAIT           = 180    -- seconds  (Consecutive Rounds, 3 min)
+local AUTO_START_WAIT_INITIAL   = 300    -- seconds  (First Round, 7min)
+local AUTO_START_WAIT           = 120    -- seconds  (Consecutive Rounds, 3 min)
 
 -- [AUTO-START PHASED MODE]
 -- "simple"  → single window using AUTO_START_WAIT_INITIAL / AUTO_START_WAIT (default).
@@ -81,7 +82,7 @@ local SAVE_STATS_DELAY          = 3000   -- ms after intermission before SaveSta
 
 -- [MODULE]
 local MODNAME                   = "stats"
-local VERSION                   = "2.7.3"
+local VERSION                   = "2.8.0"
 
 -- [ENV OVERRIDES]
 -- Any setting above can be overridden by an environment variable of the same
@@ -106,6 +107,7 @@ COLLECT_OBJ_STATS               = env_bool("STATS_API_OBJSTATS",        COLLECT_
 COLLECT_SHOVE_STATS             = env_bool("STATS_API_SHOVESTATS",      COLLECT_SHOVE_STATS)
 COLLECT_MOVEMENT_STATS          = env_bool("STATS_API_MOVEMENTSTATS",   COLLECT_MOVEMENT_STATS)
 COLLECT_STANCE_STATS            = env_bool("STATS_API_STANCESTATS",     COLLECT_STANCE_STATS)
+COLLECT_ACTIVITY_STATS          = env_bool("STATS_API_ACTIVITYSTATS",   COLLECT_ACTIVITY_STATS)
 COLLECT_VEHICLE_STATS           = env_bool("STATS_API_VEHICLESTATS",    COLLECT_VEHICLE_STATS)
 COLLECT_VEHICLE_TELEMETRY       = env_bool("STATS_API_VEHICLE_TELEMETRY", COLLECT_VEHICLE_TELEMETRY)
 COLLECT_VEHICLE_DAMAGE          = env_bool("STATS_API_VEHICLE_DAMAGE",  COLLECT_VEHICLE_DAMAGE)
@@ -152,6 +154,7 @@ local utils                     = gs_require("util/utils")
 local config_mod                = gs_require("config")
 local players                   = gs_require("players")
 local movement                  = gs_require("movement")
+local activity                  = gs_require("activity")
 local gamelog                   = gs_require("gamelog")
 local events                    = gs_require("events")
 local objectives                = gs_require("objectives")
@@ -201,6 +204,7 @@ local function build_cfg()
         collect_shove_stats     = COLLECT_SHOVE_STATS,
         collect_movement_stats  = COLLECT_MOVEMENT_STATS,
         collect_stance_stats    = COLLECT_STANCE_STATS,
+        collect_activity_stats  = COLLECT_ACTIVITY_STATS,
         collect_gamelog         = COLLECT_GAMELOG,
         collect_vehicle_stats   = COLLECT_VEHICLE_STATS,
         collect_vehicle_telemetry = COLLECT_VEHICLE_TELEMETRY,
@@ -367,12 +371,14 @@ function et_InitGame()
     end
 
     -- Init sub-modules
+    local activity_mod = COLLECT_ACTIVITY_STATS and activity or nil
     players.init(log_mod, maxClients)
-    movement.init(log_mod, maxClients)
+    activity.init(cfg, log_mod)
+    movement.init(log_mod, maxClients, activity_mod)
     gamelog.init(COLLECT_GAMELOG)
-    vehicle.init(cfg, log_mod, players, gamelog)
-    events.init(cfg, log_mod, players, gamelog, objectives, COLLECT_VEHICLE_STATS and vehicle or nil)
-    objectives.init(cfg, log_mod, players, gamelog, COLLECT_VEHICLE_STATS and vehicle or nil)
+    vehicle.init(cfg, log_mod, players, gamelog, activity_mod)
+    events.init(cfg, log_mod, players, gamelog, objectives, COLLECT_VEHICLE_STATS and vehicle or nil, activity_mod)
+    objectives.init(cfg, log_mod, players, gamelog, COLLECT_VEHICLE_STATS and vehicle or nil, activity_mod)
     scores.init(cfg, log_mod, http, gamestate)
     ng_scores.init(cfg, log_mod, scores, http, gather)
     gather.init(cfg, log_mod, http, api, scores)
@@ -380,7 +386,7 @@ function et_InitGame()
     api.set_server_info(server_ip, server_port)
     stats.init(cfg, log_mod, http, api,
                movement, objectives, events, gamelog, players, VERSION, scores,
-               COLLECT_VEHICLE_STATS and vehicle or nil)
+               COLLECT_VEHICLE_STATS and vehicle or nil, activity_mod)
     gamestate.init(cfg, log_mod, {
         players    = players,
         movement   = movement,
@@ -388,6 +394,7 @@ function et_InitGame()
         events     = events,
         objectives = objectives,
         vehicle    = COLLECT_VEHICLE_STATS and vehicle or nil,
+        activity   = activity_mod,
         gather     = gather,
         api        = api,
         stats      = stats,
@@ -409,6 +416,7 @@ function et_InitGame()
         log_mod.debug(string.format("  collect_shove_stats : %s", bool(COLLECT_SHOVE_STATS)))
         log_mod.debug(string.format("  collect_movement    : %s", bool(COLLECT_MOVEMENT_STATS)))
         log_mod.debug(string.format("  collect_stance      : %s", bool(COLLECT_STANCE_STATS)))
+        log_mod.debug(string.format("  collect_activity    : %s", bool(COLLECT_ACTIVITY_STATS)))
         local wf_n = weapons.count(_weapon_fire_filter)
         log_mod.debug(string.format("  collect_weapon_fire : %s  -> %s",
             COLLECT_WEAPON_FIRE,
@@ -536,6 +544,14 @@ function et_RunFrame(frame_level_time)
         _was_paused = false
     end
 
+    -- Activity runs entirely on now_ms: its stamps arrive from events.lua
+    -- (level clock), objectives.lua and vehicle.lua (timeline clock), so one
+    -- cached read per frame is what keeps the 3s window measured against
+    -- itself. `live` gates it -- warmup and paused shooting count for nothing.
+    if COLLECT_ACTIVITY_STATS then
+        activity.set_frame(now_ms, is_playing and not paused)
+    end
+
     -- now_ms, not frame_level_time: these emit timestamped telemetry and compare against
     -- stamps taken with et.trap_Milliseconds() elsewhere (vehicle.on_damage via events.lua,
     -- vehicle.on_repair via objectives.lua).
@@ -554,7 +570,10 @@ function et_RunFrame(frame_level_time)
         gamestate.round_start_unix = os.time()
     end
 
-    if COLLECT_MOVEMENT_STATS or COLLECT_STANCE_STATS then
+    -- COLLECT_ACTIVITY_STATS is in this guard because activity.accumulate runs
+    -- inside movement.track's client loop; without it the accumulator never
+    -- ticks when both movement flags are off.
+    if COLLECT_MOVEMENT_STATS or COLLECT_STANCE_STATS or COLLECT_ACTIVITY_STATS then
         movement.track(frame_level_time, players)
     end
 

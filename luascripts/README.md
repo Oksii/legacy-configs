@@ -64,6 +64,7 @@ Keyed by GUID. Each entry includes:
 | `spawn_count` | number | Number of spawns detected |
 | `player_speed` | object | `ups_avg`, `ups_peak`, `kph_avg`, `kph_peak`, `mph_avg`, `mph_peak` |
 | `stance_stats_seconds` | object | Seconds spent in each stance (see below) |
+| `activity_stats_seconds` | object | Engaged vs idle time (see below) |
 | `obj_planted` | object | `{ leveltime: { objective, timestamp_unix } }` |
 | `obj_defused` | object | Same |
 | `obj_destroyed` | object | Same |
@@ -109,6 +110,47 @@ Keyed by GUID. Each entry includes:
 | `in_sprint` | Seconds sprinting (stamina depleting) |
 | `in_turtle` | Seconds with zero stamina / full recovery (standing still) |
 | `is_downed` | Seconds in downed (revivable) state |
+
+**`activity_stats_seconds` fields:**
+
+Separates time spent *actively involved* from idle camping time. A trigger — using a
+weapon or tool, dealing damage, taking damage, or objective work — opens a **3-second
+sliding window**; the accumulator advances by the real frame delta while the window is
+open. Overlapping triggers extend one window rather than stacking, so a six-round burst
+costs one window, not six.
+
+Both clocks run only while the player is **alive** (not downed), the gamestate is
+`GS_PLAYING`, and the server is not paused, so `engaged <= alive` always holds and
+`engaged / alive` is the engaged-vs-idle ratio. Downed time is excluded from both and is
+reported separately as `stance_stats_seconds.is_downed`.
+
+| Field | Description |
+|-------|-------------|
+| `alive` | Seconds alive and playing — the denominator |
+| `engaged` | Seconds actively involved — the **union** of the four windows below, not their sum |
+| `from_weapon` | Weapon or tool use, **including shots that miss** — bullets, grenades, syringe, medpack, ammo, pliers, binoculars |
+| `from_dmg_dealt` | Damage dealt to another player |
+| `from_dmg_taken` | Damage taken from another player |
+| `from_objective` | Carrying an objective, pushing a moving escort vehicle, or an objective action (plant, defuse, repair, capture, shove) |
+
+`engaged` is the **union** of the four source windows — it advances whenever any one of
+them is open. The four `from_*` fields are **independent durations and therefore overlap**:
+each is the real time that source was live, so any one of them is `<= engaged`, but
+together they sum to *more* than `engaged`. A player who is carrying the objective while
+trading fire accrues in three of them at once.
+
+That means no percentage split is derivable from the breakdown — use `engaged / alive` for
+the ratio, and read each `from_*` on its own. The fields are directly comparable between
+players: if A shoots B for ten seconds, A's `from_dmg_dealt` and B's `from_dmg_taken` both
+reflect it, differing only where one of them was dead or downed (which is excluded from
+`alive` and so from every other field too).
+
+World damage (fall, drowning, burning, crushing) and self-inflicted splash open no window
+— a self-inflicted panzer already counted under `from_weapon` when the shot was fired.
+
+`from_weapon` counts every shot regardless of `COLLECT_WEAPON_FIRE`: that filter governs
+gamelog volume only, and its default excludes all hitscan weapons, so tying activity to it
+would leave a rifleman with `from_weapon = 0`. Gamelog output is unaffected.
 
 ### `metadata`
 
@@ -637,6 +679,15 @@ interface StanceStatsSeconds {
   is_downed:       number;
 }
 
+interface ActivityStatsSeconds {
+  alive:          number;  // denominator: alive, playing, not paused
+  engaged:        number;  // union of the four from_* windows, not their sum
+  from_weapon:    number;  // weapon/tool use, misses included
+  from_dmg_dealt: number;
+  from_dmg_taken: number;
+  from_objective: number;  // carry, escort push, objective actions
+}
+
 /** Standard objective stat entry — keyed by leveltime (as string). */
 interface ObjStatEntry {
   objective:      string;
@@ -671,6 +722,9 @@ interface PlayerStat {
 
   // COLLECT_STANCE_STATS
   stance_stats_seconds?: StanceStatsSeconds;
+
+  // COLLECT_ACTIVITY_STATS
+  activity_stats_seconds?: ActivityStatsSeconds;
 
   // COLLECT_OBJ_STATS
   obj_planted?:       ObjStatMap;
@@ -1083,6 +1137,7 @@ The match-ID endpoint is called as `GET {API_URL_MATCHID}/{server_ip}/{server_po
 | `COLLECT_SHOVE_STATS` | `true` | Shove tracking in `player_stats` and `gamelog` |
 | `COLLECT_MOVEMENT_STATS` | `true` | Distance travelled and speed in `player_stats` |
 | `COLLECT_STANCE_STATS` | `true` | Stance-time breakdown in `player_stats` |
+| `COLLECT_ACTIVITY_STATS` | `true` | Engaged-vs-idle time breakdown in `player_stats` |
 | `COLLECT_VEHICLE_STATS` | `true` | Entity-state escort vehicle tracking: per-player escort credit (`player_stats.obj_vehicle.escort`) and `vehicle_*` timeline events in `gamelog`. Active only on maps with an `escort` config section — its entry names (or `script_name` keys) pin the vehicle script_movers; maps without one have no vehicle and are skipped entirely. |
 | `COLLECT_VEHICLE_TELEMETRY` | `true` | Path position samples for moving vehicles (`vehicle_pos`) and objective carriers (`carrier_pos`), enabling route replay. Sampled per frame; volume is independent of `sv_fps` in both cases. **Vehicles** emit only where the path turns — at or below one point per second (~200 events per escort round). **Carriers** additionally hold a 10 Hz floor while moving (2.7.2+), giving ~32 units between samples so carry distance is measured rather than estimated: expect roughly `10 x carry_seconds` per round (~2100 on the heaviest round measured, versus 423 under pure vertex gating), and 1 Hz while a carrier stands still. |
 | `COLLECT_VEHICLE_DAMAGE` | `true` | Per-player damage tracking for damageable objectives: `vehicle_damage` events + `player_stats.obj_vehicle.damage` / `.repairs` for vehicles, and `obj_damage` events for `ET_CONSTRUCTIBLE` objectives (command posts, breach walls, barriers). Corpse gibs and decorative breakables are filtered out; damage is clamped to remaining health. Trucks are not damageable and never emit these. |
@@ -1200,6 +1255,7 @@ silently ignored and the defaults above apply.
 | `STATS_API_SHOVESTATS` | `COLLECT_SHOVE_STATS` |
 | `STATS_API_MOVEMENTSTATS` | `COLLECT_MOVEMENT_STATS` |
 | `STATS_API_STANCESTATS` | `COLLECT_STANCE_STATS` |
+| `STATS_API_ACTIVITYSTATS` | `COLLECT_ACTIVITY_STATS` |
 | `STATS_API_VEHICLESTATS` | `COLLECT_VEHICLE_STATS` |
 | `STATS_API_VEHICLE_TELEMETRY` | `COLLECT_VEHICLE_TELEMETRY` |
 | `STATS_API_VEHICLE_DAMAGE` | `COLLECT_VEHICLE_DAMAGE` |

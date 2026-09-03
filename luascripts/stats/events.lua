@@ -13,6 +13,10 @@ local players_ref
 local gamelog_ref
 local objectives_ref
 local vehicle_ref
+local activity_ref
+local ACT_SRC_WEAPON
+local ACT_SRC_DEALT
+local ACT_SRC_TAKEN
 
 local MAX_CLIENT_SLOTS = 64  -- entity numbers below this are always clients
 local ET_CONSTRUCTIBLE = 33  -- entityType_t: engineer build/destroy objectives
@@ -52,12 +56,17 @@ local _aReinfOffset     = {}  -- populated by parse_reinf_times()
 local _level_time       = 0   -- updated from et_RunFrame via events.set_level_time()
 
 
-function events.init(cfg, log_ref, players_module, gamelog_module, objectives_module, vehicle_module)
+function events.init(cfg, log_ref, players_module, gamelog_module, objectives_module, vehicle_module, activity_module)
     log            = log_ref
     players_ref    = players_module
     gamelog_ref    = gamelog_module
     objectives_ref = objectives_module
     vehicle_ref    = vehicle_module
+    activity_ref   = activity_module
+
+    ACT_SRC_WEAPON = activity_module and activity_module.SRC_WEAPON or nil
+    ACT_SRC_DEALT  = activity_module and activity_module.SRC_DEALT  or nil
+    ACT_SRC_TAKEN  = activity_module and activity_module.SRC_TAKEN  or nil
 
     _collect_gamelog     = cfg.collect_gamelog
     _collect_weapon_fire = cfg.collect_weapon_fire or nil
@@ -240,6 +249,18 @@ function events.on_damage(target, attacker, damage, damage_flags, mod)
         return
     end
 
+    if activity_ref and type(attacker) == "number"
+    and attacker >= 0 and attacker < MAX_CLIENT_SLOTS and attacker ~= target then
+        local a_entry = players_ref.guids[attacker]
+        if a_entry and a_entry.guid ~= "WORLD" then
+            activity_ref.stamp(a_entry.guid, ACT_SRC_DEALT)
+        end
+        local v_entry = players_ref.guids[target]
+        if v_entry and v_entry.guid ~= "WORLD" then
+            activity_ref.stamp(v_entry.guid, ACT_SRC_TAKEN)
+        end
+    end
+
     if not _collect_gamelog or not gamelog_ref then return end
 
     local hit_region     = get_hit_region(attacker)
@@ -291,11 +312,13 @@ end
 
 -- Filtered by the resolved COLLECT_WEAPON_FIRE spec (see stats/weapons.lua).
 function events.on_weapon_fire(clientNum, weapon)
-    if not _collect_weapon_fire or not gamelog_ref then return 0 end
-    if _collect_weapon_fire ~= true and not _collect_weapon_fire[weapon] then return 0 end
-
     local entry = players_ref.guids[clientNum]
     if not entry or entry.guid == "WORLD" then return 0 end
+
+    if activity_ref then activity_ref.stamp(entry.guid, ACT_SRC_WEAPON) end
+
+    if not _collect_weapon_fire or not gamelog_ref then return 0 end
+    if _collect_weapon_fire ~= true and not _collect_weapon_fire[weapon] then return 0 end
 
     local snap   = players_ref.get_snapshot(clientNum)
     local angles = et.gentity_get(clientNum, "ps.viewangles")

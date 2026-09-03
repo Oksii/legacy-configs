@@ -7,7 +7,9 @@ local movement = {}
 
 local utils = require("luascripts/stats/util/utils")
 
-local log 
+local log
+local activity_ref
+local ACT_SRC_OBJ
 
 local CON_CONNECTED             = 2
 local EF_DEAD                   = 0x00000001
@@ -100,9 +102,11 @@ local function ensure_tracking(guid)
 end
 
 
-function movement.init(log_ref, maxClients)
+function movement.init(log_ref, maxClients, activity_module)
     log = log_ref
     _maxClients = maxClients or 64
+    activity_ref = activity_module
+    ACT_SRC_OBJ  = activity_module and activity_module.SRC_OBJ or nil
 end
 
 
@@ -198,7 +202,10 @@ function movement.track(level_time, players_ref)
                             if is_leaning and not is_prone and not is_mounted then
                                 st.in_lean = st.in_lean + dt_sec
                             end
-                            if is_carrying  then st.in_objcarrier   = st.in_objcarrier   + dt_sec end
+                            if is_carrying  then
+                                st.in_objcarrier = st.in_objcarrier + dt_sec
+                                if activity_ref then activity_ref.stamp(guid, ACT_SRC_OBJ) end
+                            end
                             if is_vehicle   then st.in_vehiclescort = st.in_vehiclescort + dt_sec end
                             if is_disguised then st.in_disguise     = st.in_disguise     + dt_sec end
                             if is_sprinting then st.in_sprint       = st.in_sprint       + dt_sec end
@@ -256,6 +263,10 @@ function movement.track(level_time, players_ref)
                     end
 
                     st.last_stance_check = level_time
+
+                    if activity_ref then
+                        activity_ref.accumulate(guid, is_alive and not is_downed)
+                    end
                 end
             end
         end
