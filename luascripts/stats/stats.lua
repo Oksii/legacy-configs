@@ -17,6 +17,7 @@ local api_ref
 local movement_ref
 local objectives_ref
 local vehicle_ref
+local activity_ref
 local events_ref
 local gamelog_ref
 local players_ref
@@ -46,7 +47,7 @@ local PERS_SCORE        = 0
 function stats.init(cfg, log_ref, http_module, api_module,
                     movement_module, objectives_module,
                     events_module, gamelog_module, players_module, version_str,
-                    scores_module, vehicle_module)
+                    scores_module, vehicle_module, activity_module)
     log            = log_ref
     http_ref       = http_module
     api_ref        = api_module
@@ -57,6 +58,7 @@ function stats.init(cfg, log_ref, http_module, api_module,
     players_ref    = players_module
     scores_ref     = scores_module
     vehicle_ref    = vehicle_module
+    activity_ref   = activity_module
 
     _api_token          = cfg.api_token             or ""
     _url_submit         = cfg.api_url_submit        or ""
@@ -269,6 +271,13 @@ function stats.save(round_start_time, round_end_time, round_start_unix, round_en
                         is_downed       = math.floor(ss.is_downed),
                     }
                 end
+            end
+        end
+
+        if activity_ref then
+            local act = activity_ref.get_stats(guid)
+            if act then
+                player_stats[guid].activity_stats_seconds = act
             end
         end
 

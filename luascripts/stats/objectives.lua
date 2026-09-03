@@ -19,6 +19,8 @@ local log
 local players_ref
 local gamelog_ref
 local vehicle_ref
+local activity_ref
+local ACT_SRC_OBJ
 
 local _collect_objstats     = true
 local _collect_shovestats   = true
@@ -192,6 +194,11 @@ end
 
 local function record_obj_stat(guid, event_type, objective, killer_info)
     if not guid or not event_type then return end
+
+    -- Single funnel for all 14 buckets, so one stamp covers plant, defuse,
+    -- destroy, take, repickup, drop, return, secure, repair, flag capture,
+    -- carrier kill and shoves.
+    if activity_ref then activity_ref.stamp(guid, ACT_SRC_OBJ) end
 
     if not objectives.objstats[guid] then
         objectives.objstats[guid] = {
@@ -522,11 +529,13 @@ local function handle_dynamite_event(text, event_type, action_name)
 end
 
 
-function objectives.init(cfg, log_ref, players_module, gamelog_module, vehicle_module)
+function objectives.init(cfg, log_ref, players_module, gamelog_module, vehicle_module, activity_module)
     log                 = log_ref
     players_ref         = players_module
     gamelog_ref         = gamelog_module
     vehicle_ref         = vehicle_module
+    activity_ref        = activity_module
+    ACT_SRC_OBJ         = activity_module and activity_module.SRC_OBJ or nil
 
     _collect_objstats   = cfg.collect_obj_stats
     _collect_shovestats = cfg.collect_shove_stats

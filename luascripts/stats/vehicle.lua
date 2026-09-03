@@ -28,6 +28,8 @@ local pathgate = require("luascripts/stats/util/pathgate")
 local log
 local players_ref
 local gamelog_ref
+local activity_ref
+local ACT_SRC_OBJ
 
 local _collect_telemetry    = false
 local _collect_damage       = false
@@ -84,10 +86,12 @@ local function emit(label, cand, fields, leveltime)
 end
 
 
-function vehicle.init(cfg, log_ref, players_module, gamelog_module)
-    log         = log_ref
-    players_ref = players_module
-    gamelog_ref = gamelog_module
+function vehicle.init(cfg, log_ref, players_module, gamelog_module, activity_module)
+    log          = log_ref
+    players_ref  = players_module
+    gamelog_ref  = gamelog_module
+    activity_ref = activity_module
+    ACT_SRC_OBJ  = activity_module and activity_module.SRC_OBJ or nil
 
     _collect_telemetry = cfg.collect_vehicle_telemetry or false
     _collect_damage    = cfg.collect_vehicle_damage or false
@@ -188,6 +192,8 @@ local function accrue_escort(cand, origin, displacement, dt_ms)
                 acc.time_ms  = acc.time_ms + dt_ms
                 acc.distance = acc.distance + displacement
                 table.insert(escorts, entry.guid)
+
+                if activity_ref then activity_ref.stamp(entry.guid, ACT_SRC_OBJ) end
             end
         end
     end
