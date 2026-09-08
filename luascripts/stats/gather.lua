@@ -311,6 +311,22 @@ end
 --   map_index 1, round 0 → alpha=Allies (swapped)
 --   map_index 1, round 1 → alpha=Axis
 --   ... and so on.
+-- Per-channel auto-start wait, delivered on the route (see _match_extra above).
+-- The route is the override; the env-set module local is the fallback.
+local ROUTE_WAIT_MAX = 2400
+local function route_wait(v, fallback)
+    local n = tonumber(v)
+    if n and n >= ROUTE_WAIT_MIN and n <= ROUTE_WAIT_MAX then
+        return n, "route"
+    end
+    if n and log then
+        log.write(string.format(
+            "auto_start: route wait %ds out of range (%d-%d); using env value %ds",
+            n, ROUTE_WAIT_MIN, ROUTE_WAIT_MAX, fallback))
+    end
+    return fallback, "env"
+end
+
 local function recompute_match_timing()
     if not _match_extra then return end
     local has_auto = _match_extra.auto_start or _match_extra.auto_sort
@@ -373,13 +389,17 @@ local function recompute_match_timing()
     -- simple mode uses _start_wait_initial for the very first start and _start_wait after.
     if _match_extra.auto_start then
         local is_first_start = (map_index == 0 and round == 0)
-        local wait
+        local wait, wait_src
         if _start_mode == "phased" and is_first_start then
             _phase = "connect"
             wait   = _connect_wait
         else
             _phase = "ready"
-            wait   = is_first_start and _start_wait_initial or _start_wait
+            if is_first_start then
+                wait, wait_src = route_wait(_match_extra.auto_start_wait_initial, _start_wait_initial)
+            else
+                wait, wait_src = route_wait(_match_extra.auto_start_wait, _start_wait)
+            end
         end
         _match_extra.scheduled_start = os.time() + wait
         if log then
@@ -389,12 +409,12 @@ local function recompute_match_timing()
                     _connect_wait, _ready_wait))
             elseif is_first_start then
                 log.write(string.format(
-                    "auto_start: timing decision — first map/round; using _start_wait_initial=%ds",
-                    _start_wait_initial))
+                    "auto_start: timing decision — first map/round; using _start_wait_initial=%ds (source=%s)",
+                    wait, wait_src))
             else
                 log.write(string.format(
-                    "auto_start: timing decision — fallback; using _start_wait=%ds",
-                    _start_wait))
+                    "auto_start: timing decision — fallback; using _start_wait=%ds (source=%s)",
+                    wait, wait_src))
             end
             log.write(string.format(
                 "auto_start: map=%q (idx=%d) round=%d phase=%s → sides_swapped=%s scheduled_start=now+%ds",
@@ -470,6 +490,8 @@ function gather.on_team_data_fetched(match_id, match_data)
         channel_id      = match_data.channel_id      or nil,
         server_config   = match_data.server_config   or nil,
         is_gather       = match_data.is_gather       or false,
+        auto_start_wait_initial = tonumber(match_data.auto_start_wait_initial) or nil,
+        auto_start_wait         = tonumber(match_data.auto_start_wait)         or nil,
     }
 
     -- Lua owns auto-start timer. Keep scheduled_start stable across API refreshes
