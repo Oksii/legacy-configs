@@ -6,7 +6,8 @@
 
 local events = {}
 
-local utils = require("luascripts/stats/util/utils")
+local utils   = require("luascripts/stats/util/utils")
+local weapons = require("luascripts/stats/weapons")
 
 local log
 local players_ref
@@ -17,6 +18,9 @@ local activity_ref
 local ACT_SRC_WEAPON
 local ACT_SRC_DEALT
 local ACT_SRC_TAKEN
+
+local NO_ACTIVITY      = weapons.NO_ACTIVITY
+local WP_PLIERS        = weapons.WP_PLIERS
 
 local MAX_CLIENT_SLOTS = 64  -- entity numbers below this are always clients
 local ET_CONSTRUCTIBLE = 33  -- entityType_t: engineer build/destroy objectives
@@ -315,7 +319,11 @@ function events.on_weapon_fire(clientNum, weapon)
     local entry = players_ref.guids[clientNum]
     if not entry or entry.guid == "WORLD" then return 0 end
 
-    if activity_ref then activity_ref.stamp(entry.guid, ACT_SRC_WEAPON) end
+    -- Not every trigger pull is engagement; see weapons.NO_ACTIVITY.
+    if activity_ref and not NO_ACTIVITY[weapon]
+    and (weapon ~= WP_PLIERS or activity_ref.work_confirmed(entry.guid)) then
+        activity_ref.stamp(entry.guid, ACT_SRC_WEAPON)
+    end
 
     if not _collect_weapon_fire or not gamelog_ref then return 0 end
     if _collect_weapon_fire ~= true and not _collect_weapon_fire[weapon] then return 0 end

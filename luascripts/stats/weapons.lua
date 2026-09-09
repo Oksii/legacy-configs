@@ -103,6 +103,18 @@ for name, label in pairs(SPAWN_LABELS) do
     weapons.SPAWN_NAMES[BY_NAME[name]] = label
 end
 
+-- Free to fire and no observable effect, so spammable to farm activity time.
+-- Knife hits and arty shells still stamp SRC_DEALT via events.on_damage.
+local NO_ACTIVITY_NAMES = { "knife", "knife_kabar", "binoculars" }
+
+weapons.NO_ACTIVITY = {}
+for _, name in ipairs(NO_ACTIVITY_NAMES) do
+    weapons.NO_ACTIVITY[BY_NAME[name]] = true
+end
+
+-- Also free to fire, but gated on a confirmed outcome (activity.work_confirmed).
+weapons.WP_PLIERS = BY_NAME["pliers"]
+
 local CLASS_NAMES = { hitscan = true, spam = true, utility = true, support = true }
 
 local OFF_TOKENS = { ["false"] = true, ["none"] = true, ["off"] = true, ["0"] = true }

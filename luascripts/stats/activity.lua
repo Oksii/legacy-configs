@@ -18,6 +18,7 @@ local activity = {}
 local log
 local ACTIVITY_WINDOW_MS = 3000
 local MAX_FRAME_DT_MS    = 1000
+local CONFIRM_WINDOW_MS  = 5000
 
 activity.SRC_WEAPON = 1
 activity.SRC_DEALT  = 2
@@ -34,6 +35,7 @@ local SRC_FIELD = { "from_weapon", "from_dmg_dealt", "from_dmg_taken", "from_obj
 --   last_tick,
 -- }
 local _activity = {}
+local _confirm  = {}    -- [guid] = ms of last engine-confirmed pliers outcome
 local _enabled = false
 local _now     = 0      -- et.trap_Milliseconds(), refreshed once per frame
 local _live    = false  -- GS_PLAYING and not paused
@@ -68,6 +70,18 @@ function activity.stamp(guid, src)
     if not _enabled or not _live or not guid or guid == "WORLD" then return end
     if not src then return end
     ensure(guid).stamp_ms[src] = _now
+end
+
+-- Pliers fire carries no trace result, so it only counts while the engine has
+-- recently confirmed real work (objectives.lua's Repair:/Dynamite_Diffuse: lines).
+function activity.confirm_work(guid)
+    if not _enabled or not _live or not guid or guid == "WORLD" then return end
+    _confirm[guid] = _now
+end
+
+function activity.work_confirmed(guid)
+    local t = _confirm[guid]
+    return t ~= nil and (_now - t) < CONFIRM_WINDOW_MS
 end
 
 function activity.accumulate(guid, eligible)
@@ -110,10 +124,12 @@ end
 
 function activity.clear(guid)
     _activity[guid] = nil
+    _confirm[guid]  = nil
 end
 
 function activity.reset()
     _activity = {}
+    _confirm  = {}
     _now      = 0
     _live     = false
 end
