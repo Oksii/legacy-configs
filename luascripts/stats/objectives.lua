@@ -477,6 +477,10 @@ local function handle_dynamite_event(text, event_type, action_name)
     local function emit(obj_name)
         local stat_key = "obj_" .. action_name
         record_obj_stat(guid, stat_key, obj_name)
+        -- Defusing is pliers work; planting is the dynamite weapon.
+        if activity_ref and action_name == "defused" then
+            activity_ref.confirm_work(guid)
+        end
         update_objective_state(obj_name, action_name, entry)
 
         -- The planter/defuser is standing at the dynamite, so their origin is
@@ -980,6 +984,7 @@ function objectives.handle_print(text)
                 end
 
                 record_obj_stat(guid, "obj_repaired", objective_name)
+                if activity_ref then activity_ref.confirm_work(guid) end
                 if _collect_gamelog and gamelog_ref then
                     -- The engineer is standing at what they are repairing.
                     local pos = et.gentity_get(id, "r.currentOrigin")
