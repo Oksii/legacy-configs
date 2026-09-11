@@ -1,6 +1,6 @@
 --[[
     stats.lua  — root module for ETLegacy game stats collection
-    Version: 2.8.1
+    Version: 2.9.0
 
     All user-facing settings live in the CONFIGURATION block below.
     config.toml is kept only for map-specific patterns and common buildables.
@@ -28,6 +28,7 @@ local COLLECT_SHOVE_STATS       = true
 local COLLECT_MOVEMENT_STATS    = true
 local COLLECT_STANCE_STATS      = true   -- prone / crouch / sprint time, etc.
 local COLLECT_ACTIVITY_STATS    = true   -- "actively involved" time: engaged vs idle camping
+local COLLECT_ASSIST_STATS      = true   -- kill assists: Lua mirror of the engine's G_AddKillAssistPoints
 local COLLECT_GAMELOG           = true   -- in-round event timeline (kills, damage, chat, objectives, etc.)
 local COLLECT_VEHICLE_STATS     = true   -- escort vehicle tracking: per-player escort credit + timeline events
 local COLLECT_VEHICLE_TELEMETRY = true   -- path-vertex position samples for vehicle + objective carriers (~200 events/round)
@@ -82,7 +83,7 @@ local SAVE_STATS_DELAY          = 3000   -- ms after intermission before SaveSta
 
 -- [MODULE]
 local MODNAME                   = "stats"
-local VERSION                   = "2.8.1"
+local VERSION                   = "2.9.0"
 
 -- [ENV OVERRIDES]
 -- Any setting above can be overridden by an environment variable of the same
@@ -108,6 +109,7 @@ COLLECT_SHOVE_STATS             = env_bool("STATS_API_SHOVESTATS",      COLLECT_
 COLLECT_MOVEMENT_STATS          = env_bool("STATS_API_MOVEMENTSTATS",   COLLECT_MOVEMENT_STATS)
 COLLECT_STANCE_STATS            = env_bool("STATS_API_STANCESTATS",     COLLECT_STANCE_STATS)
 COLLECT_ACTIVITY_STATS          = env_bool("STATS_API_ACTIVITYSTATS",   COLLECT_ACTIVITY_STATS)
+COLLECT_ASSIST_STATS            = env_bool("STATS_API_ASSISTSTATS",     COLLECT_ASSIST_STATS)
 COLLECT_VEHICLE_STATS           = env_bool("STATS_API_VEHICLESTATS",    COLLECT_VEHICLE_STATS)
 COLLECT_VEHICLE_TELEMETRY       = env_bool("STATS_API_VEHICLE_TELEMETRY", COLLECT_VEHICLE_TELEMETRY)
 COLLECT_VEHICLE_DAMAGE          = env_bool("STATS_API_VEHICLE_DAMAGE",  COLLECT_VEHICLE_DAMAGE)
@@ -156,6 +158,7 @@ local players                   = gs_require("players")
 local movement                  = gs_require("movement")
 local activity                  = gs_require("activity")
 local gamelog                   = gs_require("gamelog")
+local assists                   = gs_require("assists")
 local events                    = gs_require("events")
 local objectives                = gs_require("objectives")
 local vehicle                   = gs_require("vehicle")
@@ -180,6 +183,7 @@ local _deferred_init_pending    = false
 local _ng_round_start_pending   = false
 local _weapon_fire_filter       = nil    -- resolved COLLECT_WEAPON_FIRE spec (see weapons.parse)
 local _was_paused               = false  -- tracks CS_SERVERTOGGLES pause bit across frames
+local assists_mod               = nil    -- COLLECT_ASSIST_STATS and assists or nil (resolved in et_InitGame)
 
 -- CS_SERVERTOGGLES pause flag: engine sets level.server_settings |= CV_SVS_PAUSE on pause.
 local CV_SVS_PAUSE              = 16
@@ -205,6 +209,7 @@ local function build_cfg()
         collect_movement_stats  = COLLECT_MOVEMENT_STATS,
         collect_stance_stats    = COLLECT_STANCE_STATS,
         collect_activity_stats  = COLLECT_ACTIVITY_STATS,
+        collect_assist_stats    = COLLECT_ASSIST_STATS,
         collect_gamelog         = COLLECT_GAMELOG,
         collect_vehicle_stats   = COLLECT_VEHICLE_STATS,
         collect_vehicle_telemetry = COLLECT_VEHICLE_TELEMETRY,
@@ -376,8 +381,10 @@ function et_InitGame()
     activity.init(cfg, log_mod)
     movement.init(log_mod, maxClients, activity_mod)
     gamelog.init(COLLECT_GAMELOG)
+    assists_mod = COLLECT_ASSIST_STATS and assists or nil
+    assists.init(log_mod, players, gamelog)
     vehicle.init(cfg, log_mod, players, gamelog, activity_mod)
-    events.init(cfg, log_mod, players, gamelog, objectives, COLLECT_VEHICLE_STATS and vehicle or nil, activity_mod)
+    events.init(cfg, log_mod, players, gamelog, objectives, COLLECT_VEHICLE_STATS and vehicle or nil, activity_mod, assists_mod)
     objectives.init(cfg, log_mod, players, gamelog, COLLECT_VEHICLE_STATS and vehicle or nil, activity_mod)
     scores.init(cfg, log_mod, http, gamestate)
     ng_scores.init(cfg, log_mod, scores, http, gather)
@@ -386,7 +393,7 @@ function et_InitGame()
     api.set_server_info(server_ip, server_port)
     stats.init(cfg, log_mod, http, api,
                movement, objectives, events, gamelog, players, VERSION, scores,
-               COLLECT_VEHICLE_STATS and vehicle or nil, activity_mod)
+               COLLECT_VEHICLE_STATS and vehicle or nil, activity_mod, assists_mod)
     gamestate.init(cfg, log_mod, {
         players    = players,
         movement   = movement,
@@ -395,6 +402,7 @@ function et_InitGame()
         objectives = objectives,
         vehicle    = COLLECT_VEHICLE_STATS and vehicle or nil,
         activity   = activity_mod,
+        assists    = assists_mod,
         gather     = gather,
         api        = api,
         stats      = stats,
@@ -417,6 +425,7 @@ function et_InitGame()
         log_mod.debug(string.format("  collect_movement    : %s", bool(COLLECT_MOVEMENT_STATS)))
         log_mod.debug(string.format("  collect_stance      : %s", bool(COLLECT_STANCE_STATS)))
         log_mod.debug(string.format("  collect_activity    : %s", bool(COLLECT_ACTIVITY_STATS)))
+        log_mod.debug(string.format("  collect_assist      : %s", bool(COLLECT_ASSIST_STATS)))
         local wf_n = weapons.count(_weapon_fire_filter)
         log_mod.debug(string.format("  collect_weapon_fire : %s  -> %s",
             COLLECT_WEAPON_FIRE,
@@ -646,7 +655,7 @@ function et_ClientUserinfoChanged(clientNum)
     end
 end
 
--- Notable weapons detectable at spawn via et.GetCurrentWeapon(). 
+-- Notable weapons detectable at spawn via et.GetCurrentWeapon().
 -- Keyed by weapon id from stats/weapons.lua
 local SPAWN_WEAPON_NAMES = weapons.SPAWN_NAMES
 
@@ -655,6 +664,11 @@ local CLASS_LOOKUP_SPAWN = {
 }
 
 function et_ClientSpawn(clientNum, revived, teamChange, restoreHealth)
+    -- Engine parity: ClientSpawn memsets gclient_s, wiping the victim's
+    -- dmgReceivedSts on EVERY spawn — respawn, revive, team change. This must
+    -- sit above the gamelog/revive early-outs below.
+    if assists_mod then assists_mod.on_spawn(clientNum) end
+
     if not COLLECT_GAMELOG or revived == 1 then return end
 
     local entry = players.guids[clientNum]

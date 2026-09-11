@@ -16,6 +16,7 @@ local events_ref
 local objectives_ref
 local vehicle_ref
 local activity_ref
+local assists_ref
 local gather_ref
 local api_ref
 local stats_ref
@@ -45,6 +46,7 @@ function gamestate.init(cfg, log_ref, all_modules)
     objectives_ref = all_modules.objectives
     vehicle_ref    = all_modules.vehicle
     activity_ref   = all_modules.activity
+    assists_ref    = all_modules.assists
     gather_ref     = all_modules.gather
     api_ref        = all_modules.api
     stats_ref      = all_modules.stats
@@ -62,6 +64,7 @@ function gamestate.reset(server_ip, server_port)
     if events_ref     then events_ref.reset()            end
     if objectives_ref then objectives_ref.reset()        end
     if activity_ref   then activity_ref.reset()          end
+    if assists_ref    then assists_ref.reset()           end
     if api_ref        then api_ref.reset()               end
     if stats_ref      then stats_ref.reset()             end
     if gather_ref     then gather_ref.reset()            end
