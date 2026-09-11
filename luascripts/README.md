@@ -23,7 +23,7 @@ Round outcome and timing data.
 
 > **Deprecation notice:** The fields `servername`, `config`, `matchID`, `stats_version`,
 > `mod_version`, `et_version`, `server_ip`, and `server_port` are duplicated here for
-> backwards compatibility but have moved to [`metadata`](#metadata). 
+> backwards compatibility but have moved to [`metadata`](#metadata).
 > read those fields from `metadata` and treat the copies in `round_info` as legacy.
 
 | Field | Type | Description |
@@ -80,6 +80,7 @@ Keyed by GUID. Each entry includes:
 | `shoves_given` | object | `{ leveltime: { objective (target GUID), timestamp_unix } }` |
 | `shoves_received` | object | Same |
 | `obj_vehicle` | object | `COLLECT_VEHICLE_STATS` per-player vehicle stats (see below) |
+| `assists` | object | `{ leveltime: { killer, victim, weapon, timestamp_unix } }` — kill assists credited to the **assister** (an enemy damager); `killer`/`victim` are full GUIDs, `killer` is `"WORLD"` for world deaths, `weapon` is the assister's own last meansOfDeath on the victim. 2.9.0+ — see the assists note below the table. |
 
 > **Deprecation notice:** `obj_escort` (one-shot proximity attribution at the map's escort
 > announce) was removed in 2.7.0. Its replacement is `obj_vehicle.escort` — cumulative
@@ -87,6 +88,24 @@ Keyed by GUID. Each entry includes:
 > The point-in-time facts moved to the gamelog: `vehicle_started.escorts` = who was there
 > for the steal, `vehicle_finale.escorts` = who was at the delivery. Parsers reading
 > `obj_escort` will simply stop seeing the key.
+
+> **`assists` — engine-replicated kill assists (2.9.0+).** One entry per credited assister:
+> an opposite-team player who damaged the victim within **1500 ms** of the death and is neither
+> the killer nor the victim themselves; up to **4** per death, chosen by highest cumulative
+> damage. This is a 1:1 Lua mirror of the engine's `G_AddKillAssistPoints`: teamkill deaths and
+> weapon-inflicted suicides (e.g. own grenade) credit too, while `/kill`, team-switch and bot
+> swap-places deaths never do. The damage ledger is **per life** — a respawn, revive or team
+> change wipes the victim's record, so a wounder from before the revive is not credited.
+> Map keys are event leveltimes, but **assists is the one ts-map whose keys can be nudged**:
+> when a single explosive credits the same assister for two deaths in the same server frame, the
+> second key is bumped forward by a millisecond to keep both credits. Read the key as
+> "event ms, unique per assister", not as an exact instant to join on.
+> **Completeness is config-dependent.** With `COLLECT_GAMELOG = true` the `assist` gamelog
+> events are the complete record, and `player_stats.assists` contains only credits whose GUID
+> has a `player_stats` row that round (assisters disconnected before the round-end save and
+> `TEAM_FREE`/spectator engine-parity credits are dropped from the map — the exact
+> `obj_carrierkilled` drop rule). With gamelog disabled, `player_stats.assists` is the only
+> record and those rowless credits are not reported anywhere.
 
 **`obj_vehicle` fields** (each key optional — only present when earned):
 
@@ -285,6 +304,22 @@ Ordered array of all events that occurred during the round. Every entry has:
 | `victim_health` | Victim health at time of kill |
 | `victim_stance` | Stance snapshot |
 | `victim_reinf` | Seconds until victim's team next reinforce wave |
+
+**`assist`** — damager credited when an enemy they damaged was killed by someone else (2.9.0+).
+One event per credit, up to 4 per death; emitted for teamkill deaths and weapon-inflicted
+suicides too. Emitted before the matching `kill` / `teamkill` / `suicide` event of the same death.
+
+| Field | Description |
+|-------|-------------|
+| `assister` | Credited damager GUID (absent only in the rare case they disconnected within 1.5 s of the death) |
+| `victim` | Killed player GUID |
+| `killer` | Killer GUID, or `"WORLD"` for teleporter/lava-style deaths — identical string to the `player_stats.assists` entry's `killer` |
+| `weapon` | The **assister's** last meansOfDeath on this victim (not the killing weapon) |
+| `assister_class` / `victim_class` | Classes (absent for a player no longer resolvable, see `assister`) |
+
+> With `COLLECT_GAMELOG` enabled these events are the complete assist record —
+> `player_stats.assists` only carries credits whose GUID has a row that round (see the
+> `assists` note under `player_stats`). With gamelog disabled only the (partial) map exists.
 
 **`damage`** — every damage event (high volume)
 
@@ -706,6 +741,19 @@ interface ObjCarrierKilledEntry {
 type ObjStatMap          = Record<string, ObjStatEntry>;
 type ObjCarrierKilledMap = Record<string, ObjCarrierKilledEntry>;
 
+/** Kill-assist entry — keyed by leveltime (as string), 2.9.0+. Credited to the assister;
+ *  unlike every other ts-map, colliding keys are bumped forward by 1 ms each so two
+ *  same-frame credits for one assister stay distinct — treat the key as "event ms,
+ *  unique per assister". Credits whose GUID has no player_stats row are absent (see README). */
+interface AssistEntry {
+  killer:         Guid | "WORLD";
+  victim:         Guid;
+  weapon:         number;    // assister's last meansOfDeath on the victim
+  timestamp_unix: UnixTime;
+}
+
+type AssistsMap = Record<string, AssistEntry>;
+
 interface PlayerStat {
   guid:        string;   // first 8 chars of GUID
   name:        string;
@@ -746,6 +794,9 @@ interface PlayerStat {
 
   // COLLECT_VEHICLE_STATS
   obj_vehicle?: PlayerVehicleStats;
+
+  // COLLECT_ASSIST_STATS — 2.9.0+
+  assists?: AssistsMap;
 
   /** @deprecated removed in 2.7.0 — superseded by obj_vehicle.escort (per-vehicle
    *  time/distance + finale). Never present in 2.7.0+ payloads. */
@@ -839,6 +890,17 @@ interface TeamkillEvent extends GamelogEventBase {
   victim_health: number;
   victim_stance: StanceSnapshot;
   victim_reinf:  number;  // seconds until victim's team next reinforces
+}
+
+interface AssistEvent extends GamelogEventBase {
+  group:           "player";
+  label:           "assist";          // 2.9.0+
+  assister?:       Guid;              // absent if they disconnected within 1.5 s of the death
+  victim?:         Guid;
+  killer:          Guid | "WORLD";    // same value as the player_stats.assists entry
+  weapon:          number;            // assister's last meansOfDeath on the victim
+  assister_class?: PlayerClass;
+  victim_class?:  PlayerClass;
 }
 
 interface DamageEvent extends GamelogEventBase {
@@ -1039,7 +1101,7 @@ interface PauseEvent      extends GamelogEventBase { group: "server"; label: "pa
 interface UnpauseEvent    extends GamelogEventBase { group: "server"; label: "unpause";     }
 
 type GamelogEvent =
-  | SpawnEvent | KillEvent | SuicideEvent | TeamkillEvent | DamageEvent
+  | SpawnEvent | KillEvent | SuicideEvent | TeamkillEvent | AssistEvent | DamageEvent
   | ReviveEvent | ClassChangeEvent | MessageEvent
   | ObjectiveEvent | ObjCarrierKilledEvent | ObjDroppedEvent | ObjDamageEvent
   | FlagCapturedEvent | PickupEvent | ShoveEvent
@@ -1138,6 +1200,7 @@ The match-ID endpoint is called as `GET {API_URL_MATCHID}/{server_ip}/{server_po
 | `COLLECT_MOVEMENT_STATS` | `true` | Distance travelled and speed in `player_stats` |
 | `COLLECT_STANCE_STATS` | `true` | Stance-time breakdown in `player_stats` |
 | `COLLECT_ACTIVITY_STATS` | `true` | Engaged-vs-idle time breakdown in `player_stats` |
+| `COLLECT_ASSIST_STATS` | `true` | Kill assists: Lua mirror of the engine's `G_AddKillAssistPoints` (per-life damage ledger, 1500 ms window, max 4 credits per death). Emits `player_stats.assists` and `assist` gamelog events. Independent of `COLLECT_GAMELOG`: with gamelog off, only the `player_stats` map is produced — and it is then the assist record's only (partial) form, see the assists note under `player_stats`. |
 | `COLLECT_VEHICLE_STATS` | `true` | Entity-state escort vehicle tracking: per-player escort credit (`player_stats.obj_vehicle.escort`) and `vehicle_*` timeline events in `gamelog`. Active only on maps with an `escort` config section — its entry names (or `script_name` keys) pin the vehicle script_movers; maps without one have no vehicle and are skipped entirely. |
 | `COLLECT_VEHICLE_TELEMETRY` | `true` | Path position samples for moving vehicles (`vehicle_pos`) and objective carriers (`carrier_pos`), enabling route replay. Sampled per frame; volume is independent of `sv_fps` in both cases. **Vehicles** emit only where the path turns — at or below one point per second (~200 events per escort round). **Carriers** additionally hold a 10 Hz floor while moving (2.7.2+), giving ~32 units between samples so carry distance is measured rather than estimated: expect roughly `10 x carry_seconds` per round (~2100 on the heaviest round measured, versus 423 under pure vertex gating), and 1 Hz while a carrier stands still. |
 | `COLLECT_VEHICLE_DAMAGE` | `true` | Per-player damage tracking for damageable objectives: `vehicle_damage` events + `player_stats.obj_vehicle.damage` / `.repairs` for vehicles, and `obj_damage` events for `ET_CONSTRUCTIBLE` objectives (command posts, breach walls, barriers). Corpse gibs and decorative breakables are filtered out; damage is clamped to remaining health. Trucks are not damageable and never emit these. |
@@ -1170,7 +1233,7 @@ never matters**. Names are the `WP_` constant lowercased with the prefix strippe
 | `hitscan` | Every trace weapon: SMGs, pistols and akimbos, rifles and scoped rifles, MG42/Browning mobile and deployed, the fixed MG42, both knives |
 | `utility` | Syringe, satchel + detonator, covert smoke |
 | `support` | Ammo pack, medkit, binoculars, pliers, adrenaline |
-| `all`     | Everything | 
+| `all`     | Everything |
 ### [OUTPUT]
 
 | Variable | Default | Description |
@@ -1256,6 +1319,7 @@ silently ignored and the defaults above apply.
 | `STATS_API_MOVEMENTSTATS` | `COLLECT_MOVEMENT_STATS` |
 | `STATS_API_STANCESTATS` | `COLLECT_STANCE_STATS` |
 | `STATS_API_ACTIVITYSTATS` | `COLLECT_ACTIVITY_STATS` |
+| `STATS_API_ASSISTSTATS` | `COLLECT_ASSIST_STATS` |
 | `STATS_API_VEHICLESTATS` | `COLLECT_VEHICLE_STATS` |
 | `STATS_API_VEHICLE_TELEMETRY` | `COLLECT_VEHICLE_TELEMETRY` |
 | `STATS_API_VEHICLE_DAMAGE` | `COLLECT_VEHICLE_DAMAGE` |
@@ -1439,6 +1503,7 @@ luascripts/
     ├── players.lua             GUID cache, get_snapshot(), class-switch detection
     ├── movement.lua            per-frame stance + distance + speed tracking
     ├── gamelog.lua             in-memory event buffer
+    ├── assists.lua             kill-assist ledger + credit loop (engine G_AddKillAssistPoints mirror)
     ├── events.lua              et_Obituary, et_Damage, et_ClientCommand
     ├── objectives.lua          et_Print pattern matching, buildables, flags, shoves
     ├── vehicle.lua             entity-state escort vehicle tracking (auto-detect, escort credit, timeline)

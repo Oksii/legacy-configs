@@ -114,6 +114,22 @@ function gamelog.teamkill(killer_snap, victim_snap, weapon, victim_reinf)
     })
 end
 
+-- Assist (damager credited when an enemy is killed by someone else).
+-- Killer is deliberately a GUID *string*, not a snapshot: get_snapshot is nil
+-- for ENTITYNUM_WORLD, and the canonical world-killer form is "WORLD" — the
+-- same value the player_stats assists ts-map entry stores. killer_class is
+-- simply absent for world kills since only players have classes.
+function gamelog.assist(assister_snap, victim_snap, killer_guid, weapon)
+    gamelog.record("assist", "player", {
+        assister       = assister_snap and assister_snap.guid,
+        victim         = victim_snap  and victim_snap.guid,
+        killer         = killer_guid,
+        weapon         = weapon,
+        assister_class = assister_snap and assister_snap.class,
+        victim_class   = victim_snap  and victim_snap.class,
+    })
+end
+
 -- Damage
 function gamelog.damage(killer_snap, victim_snap, damage, damage_flags, weapon, hit_region)
     gamelog.record("damage", "player", {

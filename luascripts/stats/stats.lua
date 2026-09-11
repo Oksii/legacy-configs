@@ -18,6 +18,7 @@ local movement_ref
 local objectives_ref
 local vehicle_ref
 local activity_ref
+local assists_ref
 local events_ref
 local gamelog_ref
 local players_ref
@@ -47,7 +48,7 @@ local PERS_SCORE        = 0
 function stats.init(cfg, log_ref, http_module, api_module,
                     movement_module, objectives_module,
                     events_module, gamelog_module, players_module, version_str,
-                    scores_module, vehicle_module, activity_module)
+                    scores_module, vehicle_module, activity_module, assists_module)
     log            = log_ref
     http_ref       = http_module
     api_ref        = api_module
@@ -59,6 +60,7 @@ function stats.init(cfg, log_ref, http_module, api_module,
     scores_ref     = scores_module
     vehicle_ref    = vehicle_module
     activity_ref   = activity_module
+    assists_ref    = assists_module
 
     _api_token          = cfg.api_token             or ""
     _url_submit         = cfg.api_url_submit        or ""
@@ -294,6 +296,17 @@ function stats.save(round_start_time, round_end_time, round_start_unix, round_en
 
         if vehicle_stats and vehicle_stats[guid] then
             player_stats[guid].obj_vehicle = vehicle_stats[guid]
+        end
+
+        -- Same drop rule as obj_carrierkilled: this sits inside the
+        -- _weapon_stats row loop, so assists credited to a GUID without a
+        -- round row (disconnected before the save, TEAM_FREE/spectator
+        -- engine-parity credits) are not reported here — see README.
+        if assists_ref then
+            local as = assists_ref.get_stats()
+            if as and as[guid] and next(as[guid]) then
+                player_stats[guid].assists = as[guid]
+            end
         end
 
     end

@@ -15,6 +15,7 @@ local gamelog_ref
 local objectives_ref
 local vehicle_ref
 local activity_ref
+local assists_ref
 local ACT_SRC_WEAPON
 local ACT_SRC_DEALT
 local ACT_SRC_TAKEN
@@ -60,13 +61,14 @@ local _aReinfOffset     = {}  -- populated by parse_reinf_times()
 local _level_time       = 0   -- updated from et_RunFrame via events.set_level_time()
 
 
-function events.init(cfg, log_ref, players_module, gamelog_module, objectives_module, vehicle_module, activity_module)
+function events.init(cfg, log_ref, players_module, gamelog_module, objectives_module, vehicle_module, activity_module, assists_module)
     log            = log_ref
     players_ref    = players_module
     gamelog_ref    = gamelog_module
     objectives_ref = objectives_module
     vehicle_ref    = vehicle_module
     activity_ref   = activity_module
+    assists_ref    = assists_module
 
     ACT_SRC_WEAPON = activity_module and activity_module.SRC_WEAPON or nil
     ACT_SRC_DEALT  = activity_module and activity_module.SRC_DEALT  or nil
@@ -153,6 +155,11 @@ end
 
 
 function events.on_obituary(target, attacker, mod)
+    -- Assist credits run first and ungated (teamkills and weapon-inflicted
+    -- suicides credit too — the mod skips and killer exclusion live inside
+    -- on_death). A nil assists_ref (STATS_API_ASSISTSTATS=false) disables it.
+    if assists_ref then assists_ref.on_death(target, attacker, mod) end
+
     local victim_entry   = players_ref.guids[target]
     local attacker_entry = players_ref.guids[attacker]
 
@@ -263,6 +270,16 @@ function events.on_damage(target, attacker, damage, damage_flags, mod)
         if v_entry and v_entry.guid ~= "WORLD" then
             activity_ref.stamp(v_entry.guid, ACT_SRC_TAKEN)
         end
+    end
+
+    -- Own guard: must NOT ride the activity block above (assist tracking keeps
+    -- working with the activity collector off) and sits before the gamelog
+    -- early-out below (works with COLLECT_GAMELOG=false too).
+    if assists_ref
+    and type(attacker) == "number" and attacker >= 0 and attacker < MAX_CLIENT_SLOTS
+    and type(target)   == "number" and target   >= 0 and target   < MAX_CLIENT_SLOTS
+    and attacker ~= target then
+        assists_ref.on_damage(target, attacker, damage, mod)
     end
 
     if not _collect_gamelog or not gamelog_ref then return end
