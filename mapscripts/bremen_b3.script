@@ -1077,6 +1077,15 @@ truck_construct
 {
 	spawn
 	{
+		set
+        {
+	        //Dersaidin 2007-08-24
+        	spawnflags 8  //was 10
+        	// changed from "invulnerable & allied constructable" to just "allied constructable"
+        	// apparently this makes the truck display a truck icon while the truck is alive
+        	// it seems that the the "truck" script_mover entity not having the flag "explosivedamageonly" (4) means that the truck is still invulnerable.
+        }
+        
 		wait 500
 		
 		kill truck
