@@ -38,7 +38,24 @@ local SPEED_US_TO_MPH   = 23.44
 
 local _weapon_stats     = {}
 
+-- Everyone seen in a spectator slot this round, keyed by GUID:
+--   { name, first_seen, last_seen }
+--
+-- Accumulated rather than sampled once, because a cast usually ends before
+-- intermission does and the engine puts every player into spectator at
+-- intermission anyway, which makes a single late read almost pure noise.
+-- Players who spectate between spawns land here too; they are filtered out
+-- downstream against the match's own rosters, which is the only place that can
+-- see all of a bo5 at once.
+local _spectators       = {}
+
+-- Engine kill assists per GUID this round, and whether this build has the
+-- field at all. nil means unprobed; see read_kill_assists.
+local _assist_counts    = {}
+local _assists_ok       = nil
+
 local CON_CONNECTED     = 2
+local TEAM_SPECTATOR    = 3
 local WS_KNIFE          = 0
 local WS_MAX            = 28
 local PERS_SCORE        = 0
@@ -97,6 +114,42 @@ local function is_empty(str)
 end
 
 
+-- read_kill_assists returns the engine's assist count, or nil on a build that
+-- does not have one.
+--
+-- sess.kill_assists only exists on builds carrying etlegacy#3570, and
+-- et.gentity_get RAISES on an unknown field rather than returning nil:
+--
+--     luaL_error(L, "tried to get invalid gentity field \"%s\"", fieldname)
+--
+-- An unguarded read would therefore abort the client loop on an older engine
+-- and cost every stat in the round, not just this one. Probed once and cached:
+-- mod files cannot hot-swap under a running etlua VM, so the answer cannot
+-- change, and a probe per player per tick would be pointless.
+--
+-- No config flag guards this. Reading one integer costs nothing, so there is
+-- nothing to turn off: a build with the field always reports it, and a build
+-- without it omits the key entirely rather than reporting a false zero.
+local function read_kill_assists(clientNum)
+    if _assists_ok == false then return nil end
+
+    local ok, value = pcall(et.gentity_get, clientNum, "sess.kill_assists")
+    if not ok then
+        -- Latch on the first failure and say so once. Without the latch a
+        -- server without the field pays a failing pcall for every player on
+        -- every tick, forever, and logs nothing anyone would notice.
+        if _assists_ok == nil and log then
+            log.write("stats: sess.kill_assists not available on this engine build, assists omitted")
+        end
+        _assists_ok = false
+        return nil
+    end
+
+    _assists_ok = true
+    return tonumber(value) or 0
+end
+
+
 function stats.store(maxClients)
     maxClients = maxClients or _maxClients
 
@@ -122,6 +175,25 @@ function stats.store(maxClients)
 
             local team = et.gentity_get(i, "sess.sessionTeam")
 
+            if team == TEAM_SPECTATOR then
+                local userinfo = et.trap_GetUserinfo(i)
+                local guid     = string.upper(et.Info_ValueForKey(userinfo, "cl_guid") or "")
+                if guid ~= "" then
+                    local now  = os.time()
+                    local spec = _spectators[guid]
+                    if spec then
+                        spec.last_seen = now
+                        spec.name      = et.gentity_get(i, "pers.netname") or spec.name
+                    else
+                        _spectators[guid] = {
+                            name       = et.gentity_get(i, "pers.netname") or "",
+                            first_seen = now,
+                            last_seen  = now,
+                        }
+                    end
+                end
+            end
+
             -- Record every team player, weapon interactions or not — objective
             -- runners (escort, courier) can finish a round without a single
             -- tracked shot and must still get a player_stats row.
@@ -143,6 +215,7 @@ function stats.store(maxClients)
                 local time_allies   = et.gentity_get(i, "sess.time_allies")
                 local time_played   = et.gentity_get(i, "sess.time_played")
                 local xp            = et.gentity_get(i, "ps.persistant", PERS_SCORE)
+                local assists       = read_kill_assists(i)
 
                 local total_time = (time_axis or 0) + (time_allies or 0)
                 local pct_played = total_time == 0 and 0
@@ -155,6 +228,12 @@ function stats.store(maxClients)
                     gibs, selfkills, teamkills, teamgibs, pct_played, xp)
 
                 _weapon_stats[guid] = row
+                -- Its own table rather than the formatted row: that string is
+                -- the legacy schema and nothing new belongs in it. Snapshotted
+                -- here for the same reason the row is, since stats.save runs
+                -- after intermission and a player who left at the final gun
+                -- would otherwise be lost.
+                _assist_counts[guid] = assists
             end
         end
     end
@@ -296,6 +375,13 @@ function stats.save(round_start_time, round_end_time, round_start_unix, round_en
             player_stats[guid].obj_vehicle = vehicle_stats[guid]
         end
 
+        -- Only when the build actually has the counter. Omitting the key says
+        -- "not measured"; a zero would say "measured, none", and on an engine
+        -- without the field that would be a lie in every row.
+        if _assist_counts[guid] ~= nil then
+            player_stats[guid].assists = _assist_counts[guid]
+        end
+
     end
 
     local gamelog_data = nil
@@ -310,6 +396,10 @@ function stats.save(round_start_time, round_end_time, round_start_unix, round_en
         round_info   = round_info,
         player_stats = player_stats,
     }
+    local spectators = stats.spectators()
+    if spectators then
+        raw_data.spectators = spectators
+    end
     if metadata then
         raw_data.metadata = metadata
     end
@@ -356,8 +446,30 @@ function stats.save(round_start_time, round_end_time, round_start_unix, round_en
 end
 
 
+-- spectators returns the round's spectator list, or nil when nobody watched.
+--
+-- Its own key in the payload, never folded into player_stats: the API sizes a
+-- match by counting that table, so a spectator in there would report a 6v6 as
+-- something else.
+function stats.spectators()
+    local out = {}
+    for guid, spec in pairs(_spectators) do
+        out[#out + 1] = {
+            guid       = guid,
+            name       = spec.name,
+            first_seen = spec.first_seen,
+            last_seen  = spec.last_seen,
+        }
+    end
+    if #out == 0 then return nil end
+    return out
+end
+
+
 function stats.reset()
-    _weapon_stats = {}
+    _weapon_stats  = {}
+    _spectators    = {}
+    _assist_counts = {}
 end
 
 return stats
