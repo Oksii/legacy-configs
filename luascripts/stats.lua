@@ -419,7 +419,7 @@ function et_InitGame()
         log_mod.debug(string.format("  collect_shove_stats : %s", bool(COLLECT_SHOVE_STATS)))
         log_mod.debug(string.format("  collect_movement    : %s", bool(COLLECT_MOVEMENT_STATS)))
         log_mod.debug(string.format("  collect_stance      : %s", bool(COLLECT_STANCE_STATS)))
-        log_mod.debug(string.format("  collect_assist      : %s", bool(COLLECT_ASSIST_STATS)))
+        log_mod.debug(string.format("  collect_assist_stats: %s", bool(COLLECT_ASSIST_STATS)))
         log_mod.debug(string.format("  collect_activity    : %s", bool(COLLECT_ACTIVITY_STATS)))
         local wf_n = weapons.count(_weapon_fire_filter)
         log_mod.debug(string.format("  collect_weapon_fire : %s  -> %s",

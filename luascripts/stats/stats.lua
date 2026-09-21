@@ -30,7 +30,7 @@ local _dump_stats_data  = false
 local _submit_to_api    = true
 local _collect_gamelog  = true
 local _collect_objstats = true
-local _collect_assists   = true
+local _collect_assists  = true
 local _maxClients       = 24
 local _version          = "unknown"
 
@@ -39,8 +39,8 @@ local SPEED_US_TO_MPH   = 23.44
 
 local _weapon_stats     = {}
 
-local _assist_counts      = {}          -- [guid] = engine kill_assists at store time
-local _assists_field_ok   = nil         -- nil = unprobed | true/false = engine capability cache
+local _assist_counts    = {}            -- [guid] = engine kill_assists at store time
+local _assists_field_ok = nil           -- nil = unprobed | true/false = engine capability cache
 
 local CON_CONNECTED     = 2
 local WS_KNIFE          = 0
@@ -71,7 +71,7 @@ function stats.init(cfg, log_ref, http_module, api_module,
     _submit_to_api      = cfg.submit_to_api ~= false
     _collect_gamelog    = cfg.collect_gamelog
     _collect_objstats   = cfg.collect_obj_stats
-    _collect_assists     = cfg.collect_assist_stats ~= false
+    _collect_assists    = cfg.collect_assist_stats ~= false
     _maxClients         = cfg.maxClients or 64
     _version            = version_str or "unknown"
 end
