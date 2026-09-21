@@ -12,6 +12,7 @@ payload to a configurable API endpoint at the end of every round.
 {
   "round_info":   { ... },
   "player_stats": { "<guid>": { ... } },
+  "spectators":   [ { ... } ],
   "metadata":     { ... },
   "gamelog":      [ { ... } ]
 }
@@ -58,6 +59,7 @@ Keyed by GUID. Each entry includes:
 | `rounds` | string | Rounds played |
 | `team` | string | Final team |
 | `weaponStats` | array | Raw weapon stat tokens (hits, atts, kills, deaths, headshots per weapon) |
+| `assists` | number | Engine kill assists (`sess.kill_assists`). Cumulative within a map like the other `sess` counters, so round 2 includes round 1 and consumers subtract. Omitted entirely on engine builds without the Lua binding (pre etlegacy#3570), which is not the same as `0`. |
 | `distance_travelled_meters` | number | Total distance (metres) |
 | `distance_travelled_spawn` | number | Distance travelled in first 3s after each spawn (total) |
 | `distance_travelled_spawn_avg` | number | Per-spawn average |
@@ -204,6 +206,35 @@ gather feature flags, and (when `AUTO_SCORES` is on) the current score state.
 | `winner_et` | number | ET team that won (1=axis, 2=allies) |
 | `alpha_side` | number | ET team alpha was playing as this round |
 | `fullhold` | boolean | True if `timelimit == nextTimeLimit` (defending team held full time) |
+
+---
+
+### `spectators`
+
+Everyone seen in a spectator slot during the round, so a cast nobody arranged in
+advance can still be credited and their stream checked. Omitted entirely when
+nobody watched.
+
+Accumulated across the round rather than sampled once: a cast usually ends
+before intermission does, and the engine puts every player into a spectator slot
+at intermission anyway, so a single late read would be mostly players and no
+casters.
+
+Players who spectate between spawns appear here too. **Filtering them out is the
+consumer's job**, against the match's own rosters rather than one round's: a
+player who fielded map 1 and spectated map 5 is a player, and only the
+match-level view can see both.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `guid` | string | Player GUID |
+| `name` | string | Name as last seen |
+| `first_seen` | number | Unix seconds, first seen in a spectator slot this round |
+| `last_seen` | number | Unix seconds, last seen |
+
+A snapshot of the same shape is also pushed once per map at
+`GS_WARMUP_COUNTDOWN` (see [`/matches/players/notify`](#player-notify)), which
+catches anyone present before round 1 who leaves before it ends.
 
 ---
 
@@ -726,6 +757,10 @@ interface PlayerStat {
   // COLLECT_ACTIVITY_STATS
   activity_stats_seconds?: ActivityStatsSeconds;
 
+  // Engine kill assists. Cumulative within a map; absent on builds without
+  // the sess.kill_assists binding (pre etlegacy#3570).
+  assists?: number;
+
   // COLLECT_OBJ_STATS
   obj_planted?:       ObjStatMap;
   obj_defused?:       ObjStatMap;
@@ -1117,6 +1152,34 @@ No other file needs to be edited.
 | `API_URL_VERSION` | `"https://…/stats/version"` | GET endpoint that returns `{ version }` |
 
 The match-ID endpoint is called as `GET {API_URL_MATCHID}/{server_ip}/{server_port}`.
+
+#### Player notify
+
+Once per map, on the `GS_WARMUP` to `GS_WARMUP_COUNTDOWN` transition, a snapshot
+of who is in the server is POSTed to `/matches/players/notify`, derived from
+`API_URL_SUBMIT`:
+
+```json
+{
+  "match_id": "…", "server_ip": "…", "server_port": "…",
+  "timestamp": 1758000000, "stats_version": "2.9.0",
+  "connected_players": [ { "guid": "…", "team": 1, "clientNum": 0 } ],
+  "spectators":        [ { "guid": "…", "name": "…", "first_seen": 0, "last_seen": 0 } ]
+}
+```
+
+Three things about it are deliberate:
+
+- **Countdown only.** Nothing is pushed during `GS_PLAYING`. This is the last
+  moment before the match at which anyone can be told, and the accumulated
+  spectator list rides the ordinary round submit afterwards for anyone who
+  connects once play has started.
+- **Fire and forget.** Backgrounded curl; no response is read and the frame
+  never waits. A push that fails is a snapshot nobody got.
+- **Requires a cached match id.** Skipped silently without one, since there is
+  nothing on the other end to attach it to. On a server with the gather
+  features off, that means the first push lands at the second map's countdown
+  rather than the first.
 
 ### [PATHS]
 
