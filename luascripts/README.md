@@ -23,7 +23,7 @@ Round outcome and timing data.
 
 > **Deprecation notice:** The fields `servername`, `config`, `matchID`, `stats_version`,
 > `mod_version`, `et_version`, `server_ip`, and `server_port` are duplicated here for
-> backwards compatibility but have moved to [`metadata`](#metadata). 
+> backwards compatibility but have moved to [`metadata`](#metadata).
 > read those fields from `metadata` and treat the copies in `round_info` as legacy.
 
 | Field | Type | Description |
@@ -58,6 +58,7 @@ Keyed by GUID. Each entry includes:
 | `rounds` | string | Rounds played |
 | `team` | string | Final team |
 | `weaponStats` | array | Raw weapon stat tokens (hits, atts, kills, deaths, headshots per weapon) |
+| `assists` | number | Engine-credited kill assists for the round (`sess.kill_assists`). Present only when `COLLECT_ASSIST_STATS` is on **and** the server build exposes the field (ET: Legacy with PR #3570) — omitted silently otherwise. `0` when supported means "verified no assists". |
 | `distance_travelled_meters` | number | Total distance (metres) |
 | `distance_travelled_spawn` | number | Distance travelled in first 3s after each spawn (total) |
 | `distance_travelled_spawn_avg` | number | Per-spawn average |
@@ -726,6 +727,10 @@ interface PlayerStat {
   // COLLECT_ACTIVITY_STATS
   activity_stats_seconds?: ActivityStatsSeconds;
 
+  // COLLECT_ASSIST_STATS — engine-credited scalar; omitted on server builds
+  // without the sess.kill_assists Lua binding (pre etlegacy#3570)
+  assists?: number;
+
   // COLLECT_OBJ_STATS
   obj_planted?:       ObjStatMap;
   obj_defused?:       ObjStatMap;
@@ -1138,6 +1143,7 @@ The match-ID endpoint is called as `GET {API_URL_MATCHID}/{server_ip}/{server_po
 | `COLLECT_MOVEMENT_STATS` | `true` | Distance travelled and speed in `player_stats` |
 | `COLLECT_STANCE_STATS` | `true` | Stance-time breakdown in `player_stats` |
 | `COLLECT_ACTIVITY_STATS` | `true` | Engaged-vs-idle time breakdown in `player_stats` |
+| `COLLECT_ASSIST_STATS` | `true` | Kill-assist count (`player_stats.assists`) read directly from the engine's `sess.kill_assists` counter. No Lua-side assist detection — requires a server build with the PR #3570 Lua binding; silently disabled (field omitted) on older builds, with one notification line in `stats.log`. |
 | `COLLECT_VEHICLE_STATS` | `true` | Entity-state escort vehicle tracking: per-player escort credit (`player_stats.obj_vehicle.escort`) and `vehicle_*` timeline events in `gamelog`. Active only on maps with an `escort` config section — its entry names (or `script_name` keys) pin the vehicle script_movers; maps without one have no vehicle and are skipped entirely. |
 | `COLLECT_VEHICLE_TELEMETRY` | `true` | Path position samples for moving vehicles (`vehicle_pos`) and objective carriers (`carrier_pos`), enabling route replay. Sampled per frame; volume is independent of `sv_fps` in both cases. **Vehicles** emit only where the path turns — at or below one point per second (~200 events per escort round). **Carriers** additionally hold a 10 Hz floor while moving (2.7.2+), giving ~32 units between samples so carry distance is measured rather than estimated: expect roughly `10 x carry_seconds` per round (~2100 on the heaviest round measured, versus 423 under pure vertex gating), and 1 Hz while a carrier stands still. |
 | `COLLECT_VEHICLE_DAMAGE` | `true` | Per-player damage tracking for damageable objectives: `vehicle_damage` events + `player_stats.obj_vehicle.damage` / `.repairs` for vehicles, and `obj_damage` events for `ET_CONSTRUCTIBLE` objectives (command posts, breach walls, barriers). Corpse gibs and decorative breakables are filtered out; damage is clamped to remaining health. Trucks are not damageable and never emit these. |
@@ -1170,7 +1176,7 @@ never matters**. Names are the `WP_` constant lowercased with the prefix strippe
 | `hitscan` | Every trace weapon: SMGs, pistols and akimbos, rifles and scoped rifles, MG42/Browning mobile and deployed, the fixed MG42, both knives |
 | `utility` | Syringe, satchel + detonator, covert smoke |
 | `support` | Ammo pack, medkit, binoculars, pliers, adrenaline |
-| `all`     | Everything | 
+| `all`     | Everything |
 ### [OUTPUT]
 
 | Variable | Default | Description |
@@ -1256,6 +1262,7 @@ silently ignored and the defaults above apply.
 | `STATS_API_MOVEMENTSTATS` | `COLLECT_MOVEMENT_STATS` |
 | `STATS_API_STANCESTATS` | `COLLECT_STANCE_STATS` |
 | `STATS_API_ACTIVITYSTATS` | `COLLECT_ACTIVITY_STATS` |
+| `STATS_API_ASSISTSTATS` | `COLLECT_ASSIST_STATS` (`"true"` / `"false"`) |
 | `STATS_API_VEHICLESTATS` | `COLLECT_VEHICLE_STATS` |
 | `STATS_API_VEHICLE_TELEMETRY` | `COLLECT_VEHICLE_TELEMETRY` |
 | `STATS_API_VEHICLE_DAMAGE` | `COLLECT_VEHICLE_DAMAGE` |

@@ -30,6 +30,7 @@ local _dump_stats_data  = false
 local _submit_to_api    = true
 local _collect_gamelog  = true
 local _collect_objstats = true
+local _collect_assists   = true
 local _maxClients       = 24
 local _version          = "unknown"
 
@@ -37,6 +38,9 @@ local SPEED_US_TO_KPH   = 15.58
 local SPEED_US_TO_MPH   = 23.44
 
 local _weapon_stats     = {}
+
+local _assist_counts      = {}          -- [guid] = engine kill_assists at store time
+local _assists_field_ok   = nil         -- nil = unprobed | true/false = engine capability cache
 
 local CON_CONNECTED     = 2
 local WS_KNIFE          = 0
@@ -67,6 +71,7 @@ function stats.init(cfg, log_ref, http_module, api_module,
     _submit_to_api      = cfg.submit_to_api ~= false
     _collect_gamelog    = cfg.collect_gamelog
     _collect_objstats   = cfg.collect_obj_stats
+    _collect_assists     = cfg.collect_assist_stats ~= false
     _maxClients         = cfg.maxClients or 64
     _version            = version_str or "unknown"
 end
@@ -94,6 +99,25 @@ end
 local function is_empty(str)
     if str == nil or str == "" then return 0 end
     return str
+end
+
+-- sess.kill_assists exists only on engine builds with etlegacy PR #3570.
+-- et.gentity_get RAISES on unknown fields (does not return nil), and also
+-- raises for clientless slots even on supported builds — so this must only
+-- be called from the CON_CONNECTED branch of stats.store(), on an `i` where
+-- ent->client is guaranteed. The verdict is a process-lifetime cache: mod
+-- files cannot hot-swap underneath a running etlua VM.
+local function read_kill_assists(clientNum)
+    if not _collect_assists then return nil end
+    if _assists_field_ok == nil then
+        _assists_field_ok = pcall(et.gentity_get, clientNum, "sess.kill_assists")
+        if not _assists_field_ok and log then
+            log.write("stats: sess.kill_assists unavailable on this engine build "
+                .. "(needs ET: Legacy with PR #3570) — assist stats disabled")
+        end
+    end
+    if not _assists_field_ok then return nil end
+    return tonumber(et.gentity_get(clientNum, "sess.kill_assists")) or 0
 end
 
 
@@ -143,6 +167,7 @@ function stats.store(maxClients)
                 local time_allies   = et.gentity_get(i, "sess.time_allies")
                 local time_played   = et.gentity_get(i, "sess.time_played")
                 local xp            = et.gentity_get(i, "ps.persistant", PERS_SCORE)
+                local assists       = read_kill_assists(i)
 
                 local total_time = (time_axis or 0) + (time_allies or 0)
                 local pct_played = total_time == 0 and 0
@@ -155,6 +180,7 @@ function stats.store(maxClients)
                     gibs, selfkills, teamkills, teamgibs, pct_played, xp)
 
                 _weapon_stats[guid] = row
+                _assist_counts[guid] = assists
             end
         end
     end
@@ -296,6 +322,11 @@ function stats.save(round_start_time, round_end_time, round_start_unix, round_en
             player_stats[guid].obj_vehicle = vehicle_stats[guid]
         end
 
+        local assists = _assist_counts[guid]
+        if assists ~= nil then
+            player_stats[guid].assists = assists
+        end
+
     end
 
     local gamelog_data = nil
@@ -357,7 +388,8 @@ end
 
 
 function stats.reset()
-    _weapon_stats = {}
+    _weapon_stats  = {}
+    _assist_counts = {}
 end
 
 return stats

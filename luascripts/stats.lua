@@ -1,6 +1,6 @@
 --[[
     stats.lua  — root module for ETLegacy game stats collection
-    Version: 2.8.1
+    Version: 2.9.0
 
     All user-facing settings live in the CONFIGURATION block below.
     config.toml is kept only for map-specific patterns and common buildables.
@@ -27,6 +27,7 @@ local COLLECT_OBJ_STATS         = true
 local COLLECT_SHOVE_STATS       = true
 local COLLECT_MOVEMENT_STATS    = true
 local COLLECT_STANCE_STATS      = true   -- prone / crouch / sprint time, etc.
+local COLLECT_ASSIST_STATS      = true   -- engine kill-assist count (sess.kill_assists, PR #3570+)
 local COLLECT_ACTIVITY_STATS    = true   -- "actively involved" time: engaged vs idle camping
 local COLLECT_GAMELOG           = true   -- in-round event timeline (kills, damage, chat, objectives, etc.)
 local COLLECT_VEHICLE_STATS     = true   -- escort vehicle tracking: per-player escort credit + timeline events
@@ -82,7 +83,7 @@ local SAVE_STATS_DELAY          = 3000   -- ms after intermission before SaveSta
 
 -- [MODULE]
 local MODNAME                   = "stats"
-local VERSION                   = "2.8.1"
+local VERSION                   = "2.9.0"
 
 -- [ENV OVERRIDES]
 -- Any setting above can be overridden by an environment variable of the same
@@ -107,6 +108,7 @@ COLLECT_OBJ_STATS               = env_bool("STATS_API_OBJSTATS",        COLLECT_
 COLLECT_SHOVE_STATS             = env_bool("STATS_API_SHOVESTATS",      COLLECT_SHOVE_STATS)
 COLLECT_MOVEMENT_STATS          = env_bool("STATS_API_MOVEMENTSTATS",   COLLECT_MOVEMENT_STATS)
 COLLECT_STANCE_STATS            = env_bool("STATS_API_STANCESTATS",     COLLECT_STANCE_STATS)
+COLLECT_ASSIST_STATS            = env_bool("STATS_API_ASSISTSTATS",     COLLECT_ASSIST_STATS)
 COLLECT_ACTIVITY_STATS          = env_bool("STATS_API_ACTIVITYSTATS",   COLLECT_ACTIVITY_STATS)
 COLLECT_VEHICLE_STATS           = env_bool("STATS_API_VEHICLESTATS",    COLLECT_VEHICLE_STATS)
 COLLECT_VEHICLE_TELEMETRY       = env_bool("STATS_API_VEHICLE_TELEMETRY", COLLECT_VEHICLE_TELEMETRY)
@@ -204,6 +206,7 @@ local function build_cfg()
         collect_shove_stats     = COLLECT_SHOVE_STATS,
         collect_movement_stats  = COLLECT_MOVEMENT_STATS,
         collect_stance_stats    = COLLECT_STANCE_STATS,
+        collect_assist_stats    = COLLECT_ASSIST_STATS,
         collect_activity_stats  = COLLECT_ACTIVITY_STATS,
         collect_gamelog         = COLLECT_GAMELOG,
         collect_vehicle_stats   = COLLECT_VEHICLE_STATS,
@@ -416,6 +419,7 @@ function et_InitGame()
         log_mod.debug(string.format("  collect_shove_stats : %s", bool(COLLECT_SHOVE_STATS)))
         log_mod.debug(string.format("  collect_movement    : %s", bool(COLLECT_MOVEMENT_STATS)))
         log_mod.debug(string.format("  collect_stance      : %s", bool(COLLECT_STANCE_STATS)))
+        log_mod.debug(string.format("  collect_assist      : %s", bool(COLLECT_ASSIST_STATS)))
         log_mod.debug(string.format("  collect_activity    : %s", bool(COLLECT_ACTIVITY_STATS)))
         local wf_n = weapons.count(_weapon_fire_filter)
         log_mod.debug(string.format("  collect_weapon_fire : %s  -> %s",
@@ -646,7 +650,7 @@ function et_ClientUserinfoChanged(clientNum)
     end
 end
 
--- Notable weapons detectable at spawn via et.GetCurrentWeapon(). 
+-- Notable weapons detectable at spawn via et.GetCurrentWeapon().
 -- Keyed by weapon id from stats/weapons.lua
 local SPAWN_WEAPON_NAMES = weapons.SPAWN_NAMES
 
