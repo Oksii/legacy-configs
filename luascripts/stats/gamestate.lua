@@ -7,6 +7,8 @@
 
 local gamestate = {}
 
+local utils     = require("luascripts/stats/util/utils")
+
 local log
 
 local players_ref
@@ -100,6 +102,26 @@ function gamestate.handle_change(new_gs, server_ip, server_port, frame_time)
 
     -- fetch fresh data before round starts
     elseif new_gs == et.GS_WARMUP_COUNTDOWN and old_gs == et.GS_WARMUP then
+        -- Who is in the server as the countdown runs: the lineups, and anyone
+        -- sitting in a spectator slot. One snapshot, fire and forget, and only
+        -- here: a push during play is not wanted, and this is the last moment
+        -- before the match that anybody can be told about.
+        --
+        -- Independent of the gather features on purpose: a scheduled match is
+        -- exactly the case this exists for, and those servers run with
+        -- auto-start and auto-rename off.
+        if api_ref and api_ref.notify_players then
+            local match_id = (scores_ref and scores_ref.get_match_id())
+                          or api_ref.cached_match_id
+            if match_id and match_id ~= "" then
+                api_ref.notify_players(match_id,
+                    stats_ref and stats_ref.spectators() or nil,
+                    utils.get_connected_players())
+            elseif log then
+                log.debug("Countdown: no match id cached, player notify skipped")
+            end
+        end
+
         if gather_ref and gather_ref.is_auto_rename_enabled() then
             if log then log.write("Warmup countdown — fetching fresh team data") end
             local match_id = api_ref and api_ref.fetch_match_id()

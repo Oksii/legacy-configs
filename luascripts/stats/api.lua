@@ -10,10 +10,12 @@ local api = {}
 local log
 local http_ref
 local names_ref
+local json
 
 local _api_token        = ""
 local _url_matchid      = ""
 local _url_version      = ""
+local _url_players      = ""
 local _version_check    = false
 local _version          = "unknown"
 
@@ -33,6 +35,16 @@ function api.init(cfg, log_ref, http_module, names_module, version_str)
     _api_token     = cfg.api_token     or ""
     _url_matchid   = cfg.api_url_matchid or ""
     _url_version   = cfg.api_url_version or ""
+
+    -- Derived from the submit URL the same way gather.lua derives its own
+    -- notify endpoint, so a deployment that moves the API only has one URL to
+    -- change.
+    local submit   = cfg.api_url_submit or ""
+    _url_players   = submit:gsub("/matches/stats/submit$", "/matches/players/notify")
+    if _url_players == submit then
+        local root = _url_matchid:match("^(https?://[^/]+)")
+        _url_players = (root or "") .. "/api/v2/stats/etl/matches/players/notify"
+    end
     _version_check = cfg.version_check  or false
     _version       = version_str or "unknown"
 
@@ -158,6 +170,57 @@ function api.check_version()
         end
     end)
 end
+
+-- api.notify_players reports who is in the server just before a round starts:
+-- the lineups, and anyone sitting in a spectator slot.
+--
+-- Sent at GS_WARMUP_COUNTDOWN and nowhere else. A push during GS_PLAYING is
+-- not wanted, and one snapshot taken as the countdown runs is the freshest
+-- picture available before the match that does not interrupt it. The
+-- accumulated spectator list still rides the round submit afterwards, which is
+-- what catches anyone who connects once play has started.
+--
+-- Fire and forget, deliberately: http.async backgrounds curl and returns, so
+-- the frame never waits on the network. Nothing reads a response, and a failed
+-- push is simply a snapshot we did not get.
+--
+-- match_id must already be cached. Fetching one here would mean a blocking
+-- call in the middle of a countdown, and without a match there is nothing on
+-- the other end for the list to attach to.
+function api.notify_players(match_id, spectators, connected)
+    if not _url_players or _url_players == "" then return false end
+    if not match_id or match_id == "" then
+        if log then log.debug("Player notify skipped: no match id yet") end
+        return false
+    end
+
+    local payload = {
+        match_id          = match_id,
+        server_ip         = _server_ip,
+        server_port       = _server_port,
+        timestamp         = os.time(),
+        stats_version     = _version,
+        connected_players = connected or {},
+        spectators        = spectators or {},
+    }
+
+    if not json then json = require("dkjson") end
+    local json_str = json.encode(payload)
+    if not json_str then return false end
+
+    local curl_cmd = string.format(
+        "curl -s -X POST -H 'Content-Type: application/json' -H 'Authorization: Bearer %s'" ..
+        " --connect-timeout 2 --max-time 5 --silent --output /dev/null '%s'",
+        _api_token, _url_players)
+
+    local ok = http_ref.async(curl_cmd, json_str)
+    if log then
+        log.write(string.format("Player notify %s: %d spectator(s), %d player(s)",
+            ok and "sent" or "failed", #(spectators or {}), #(connected or {})))
+    end
+    return ok
+end
+
 
 function api.reset()
     api.cached_match_id = nil
