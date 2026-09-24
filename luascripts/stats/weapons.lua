@@ -115,6 +115,17 @@ end
 -- Also free to fire, but gated on a confirmed outcome (activity.work_confirmed).
 weapons.WP_PLIERS = BY_NAME["pliers"]
 
+-- Cheap, repeatable and not combat: a medic can drop packs at their feet from
+-- cover all round. They stamp activity.SRC_SUPPORT, which is reported as
+-- from_support but kept out of engaged. The syringe is not here: it only fires
+-- meaningfully on a revive, which is real work near the fight.
+local SUPPORT_ACTIVITY_NAMES = { "medkit", "ammo", "medic_adrenaline" }
+
+weapons.SUPPORT_ACTIVITY = {}
+for _, name in ipairs(SUPPORT_ACTIVITY_NAMES) do
+    weapons.SUPPORT_ACTIVITY[BY_NAME[name]] = true
+end
+
 local CLASS_NAMES = { hitscan = true, spam = true, utility = true, support = true }
 
 local OFF_TOKENS = { ["false"] = true, ["none"] = true, ["off"] = true, ["0"] = true }

@@ -9,6 +9,11 @@
     now - stamp < ACTIVITY_WINDOW_MS. Overlapping triggers extend one window
     instead of stacking, so a burst costs one window, not one per round fired.
 
+    engaged is the union of the first four sources only. SRC_SUPPORT (medkit,
+    ammo and adrenaline drops) keeps its own window and is reported as
+    from_support, but never opens engaged: packs dropped from cover are not
+    engagement, and counting them let a hiding medic top the ratio.
+
     Clock: et.trap_Milliseconds() ONLY, cached once per frame by set_frame().
     Accumulates in integer ms, floors to seconds at get_stats (vehicle.lua's
     idiom, not movement.lua's float seconds).
@@ -20,13 +25,15 @@ local ACTIVITY_WINDOW_MS = 3000
 local MAX_FRAME_DT_MS    = 1000
 local CONFIRM_WINDOW_MS  = 5000
 
-activity.SRC_WEAPON = 1
-activity.SRC_DEALT  = 2
-activity.SRC_TAKEN  = 3
-activity.SRC_OBJ    = 4
+activity.SRC_WEAPON  = 1
+activity.SRC_DEALT   = 2
+activity.SRC_TAKEN   = 3
+activity.SRC_OBJ     = 4
+activity.SRC_SUPPORT = 5
 
-local SRC_COUNT = 4
-local SRC_FIELD = { "from_weapon", "from_dmg_dealt", "from_dmg_taken", "from_objective" }
+local SRC_COUNT = 5
+local SRC_FIELD = { "from_weapon", "from_dmg_dealt", "from_dmg_taken", "from_objective", "from_support" }
+local ENGAGED   = { true, true, true, true, false }  -- [src] = opens engaged
 
 -- _activity[guid] = {
 --   alive_ms, engaged_ms,
@@ -46,8 +53,8 @@ local function ensure(guid)
         a = {
             alive_ms   = 0,
             engaged_ms = 0,
-            src_ms     = { 0, 0, 0, 0 },
-            stamp_ms   = { 0, 0, 0, 0 },
+            src_ms     = { 0, 0, 0, 0, 0 },
+            stamp_ms   = { 0, 0, 0, 0, 0 },
             last_tick  = _now,
         }
         _activity[guid] = a
@@ -102,7 +109,7 @@ function activity.accumulate(guid, eligible)
         local st = stamp_ms[i]
         if st > 0 and (_now - st) < ACTIVITY_WINDOW_MS then
             src_ms[i] = src_ms[i] + dt
-            open = true
+            if ENGAGED[i] then open = true end
         end
     end
     if open then a.engaged_ms = a.engaged_ms + dt end
