@@ -129,17 +129,23 @@ reported separately as `stance_stats_seconds.is_downed`.
 | Field | Description |
 |-------|-------------|
 | `alive` | Seconds alive and playing — the denominator |
-| `engaged` | Seconds actively involved — the **union** of the four windows below, not their sum |
-| `from_weapon` | Weapon or tool use, **including shots that miss** — bullets, grenades, syringe, medpack, ammo, pliers, binoculars |
+| `engaged` | Seconds actively involved — the **union** of the first four windows below, not their sum |
+| `from_weapon` | Weapon or tool use, **including shots that miss**: bullets, grenades, syringe. Pliers count only while the engine confirms real work; knife and binoculars never count |
 | `from_dmg_dealt` | Damage dealt to another player |
 | `from_dmg_taken` | Damage taken from another player |
 | `from_objective` | Carrying an objective, pushing a moving escort vehicle, or an objective action (plant, defuse, repair, capture, shove) |
+| `from_support` | Dropping a medpack or ammo pack, or using adrenaline (2.10.0+). **Not part of `engaged`** |
 
-`engaged` is the **union** of the four source windows — it advances whenever any one of
-them is open. The four `from_*` fields are **independent durations and therefore overlap**:
-each is the real time that source was live, so any one of them is `<= engaged`, but
-together they sum to *more* than `engaged`. A player who is carrying the objective while
-trading fire accrues in three of them at once.
+`engaged` is the **union** of the four combat and objective windows: it advances whenever
+any one of them is open. The `from_*` fields are **independent durations and therefore
+overlap**: each is the real time that source was live, so any one of the first four is
+`<= engaged`, but together they sum to *more* than `engaged`. A player who is carrying the
+objective while trading fire accrues in three of them at once.
+
+`from_support` runs on the same 3-second window but never opens `engaged`, so it can exceed
+it. Packs are cheap and repeatable, and a medic dropping them at their feet from cover is
+not engaging; before 2.10.0 they counted under `from_weapon` and inflated `engaged` for
+exactly that player.
 
 That means no percentage split is derivable from the breakdown — use `engaged / alive` for
 the ratio, and read each `from_*` on its own. The fields are directly comparable between
@@ -712,11 +718,12 @@ interface StanceStatsSeconds {
 
 interface ActivityStatsSeconds {
   alive:          number;  // denominator: alive, playing, not paused
-  engaged:        number;  // union of the four from_* windows, not their sum
+  engaged:        number;  // union of the four windows below, not their sum
   from_weapon:    number;  // weapon/tool use, misses included
   from_dmg_dealt: number;
   from_dmg_taken: number;
   from_objective: number;  // carry, escort push, objective actions
+  from_support?:  number;  // 2.10.0+: medpack/ammo/adrenaline, NOT in engaged
 }
 
 /** Standard objective stat entry — keyed by leveltime (as string). */

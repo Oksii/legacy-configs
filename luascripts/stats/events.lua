@@ -18,8 +18,10 @@ local activity_ref
 local ACT_SRC_WEAPON
 local ACT_SRC_DEALT
 local ACT_SRC_TAKEN
+local ACT_SRC_SUPPORT
 
 local NO_ACTIVITY      = weapons.NO_ACTIVITY
+local SUPPORT_ACTIVITY = weapons.SUPPORT_ACTIVITY
 local WP_PLIERS        = weapons.WP_PLIERS
 
 local MAX_CLIENT_SLOTS = 64  -- entity numbers below this are always clients
@@ -68,9 +70,10 @@ function events.init(cfg, log_ref, players_module, gamelog_module, objectives_mo
     vehicle_ref    = vehicle_module
     activity_ref   = activity_module
 
-    ACT_SRC_WEAPON = activity_module and activity_module.SRC_WEAPON or nil
-    ACT_SRC_DEALT  = activity_module and activity_module.SRC_DEALT  or nil
-    ACT_SRC_TAKEN  = activity_module and activity_module.SRC_TAKEN  or nil
+    ACT_SRC_WEAPON  = activity_module and activity_module.SRC_WEAPON  or nil
+    ACT_SRC_DEALT   = activity_module and activity_module.SRC_DEALT   or nil
+    ACT_SRC_TAKEN   = activity_module and activity_module.SRC_TAKEN   or nil
+    ACT_SRC_SUPPORT = activity_module and activity_module.SRC_SUPPORT or nil
 
     _collect_gamelog     = cfg.collect_gamelog
     _collect_weapon_fire = cfg.collect_weapon_fire or nil
@@ -319,10 +322,15 @@ function events.on_weapon_fire(clientNum, weapon)
     local entry = players_ref.guids[clientNum]
     if not entry or entry.guid == "WORLD" then return 0 end
 
-    -- Not every trigger pull is engagement; see weapons.NO_ACTIVITY.
-    if activity_ref and not NO_ACTIVITY[weapon]
-    and (weapon ~= WP_PLIERS or activity_ref.work_confirmed(entry.guid)) then
-        activity_ref.stamp(entry.guid, ACT_SRC_WEAPON)
+    -- Not every trigger pull is engagement; see weapons.NO_ACTIVITY and
+    -- weapons.SUPPORT_ACTIVITY.
+    if activity_ref then
+        if SUPPORT_ACTIVITY[weapon] then
+            activity_ref.stamp(entry.guid, ACT_SRC_SUPPORT)
+        elseif not NO_ACTIVITY[weapon]
+        and (weapon ~= WP_PLIERS or activity_ref.work_confirmed(entry.guid)) then
+            activity_ref.stamp(entry.guid, ACT_SRC_WEAPON)
+        end
     end
 
     if not _collect_weapon_fire or not gamelog_ref then return 0 end
