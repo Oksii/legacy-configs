@@ -696,6 +696,8 @@ end
 
 local function rename_player(clientNum, new_name)
     local clientInfo = et.trap_GetUserinfo(clientNum)
+    -- ETLTV slaves (protocol 284) are not players, and the image finds them by name
+    if et.Info_ValueForKey(clientInfo, "protocol") == "284" then return end
     clientInfo = et.Info_SetValueForKey(clientInfo, "name", new_name)
     et.trap_SetUserinfo(clientNum, clientInfo)
     et.ClientUserinfoChanged(clientNum)

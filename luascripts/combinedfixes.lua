@@ -72,6 +72,12 @@ local ENABLE_COMMAND_LOGGING = true
 local COMMAND_LOG_VOTES      = true   -- log callvote/vote commands
 local COMMAND_LOG_REF        = true   -- log ref commands
 
+-- [ETLTV]
+-- "etltv start [tag] | stop | status | reset" on the console or rcon (not clients),
+-- passed to the oksii/etlegacy image's etlutil
+local ENABLE_ETLTV  = true
+local ETLUTIL_PATH  = "/legacy/server/etlutil"
+
 -- [LOGGING]
 -- Leave empty to auto-detect: <fs_homepath>/legacy/combinedfixes.log
 -- local LOG_FILEPATH = "/legacy/homepath/legacy/stats/game_stats.log"
@@ -98,6 +104,7 @@ ENABLE_TEAM_LOCK        = env_bool("CF_TEAM_LOCK",          ENABLE_TEAM_LOCK)
 ENABLE_COMMAND_LOGGING  = env_bool("CF_COMMAND_LOGGING",    ENABLE_COMMAND_LOGGING)
 COMMAND_LOG_VOTES       = env_bool("CF_COMMAND_LOG_VOTES",  COMMAND_LOG_VOTES)
 COMMAND_LOG_REF         = env_bool("CF_COMMAND_LOG_REF",    COMMAND_LOG_REF)
+ENABLE_ETLTV            = env_bool("CF_ETLTV",              ENABLE_ETLTV)
 SPAWN_INVUL_SECONDS     = tonumber(os.getenv("CF_SPAWN_INVUL_SECONDS")) or SPAWN_INVUL_SECONDS
 BAN_REASON              = os.getenv("CF_BAN_REASON")                    or BAN_REASON
 LOG_FILEPATH            = os.getenv("CF_LOG_FILEPATH")                  or LOG_FILEPATH
@@ -486,6 +493,40 @@ local function commandLog_clientCommand(clientNum, cmd)
     log(string.format("CLIENT_CMD client=%d name=%s guid=%s cmd=%s", clientNum, name, guid, fullCmd))
 end
 
+-- ============================================================
+-- MODULE: ETLTV
+-- ============================================================
+
+local ETLTV_COMMANDS = { start = true, stop = true, status = true, reset = true }
+
+local function etltv_consoleCommand(cmd)
+    if not ENABLE_ETLTV or cmd ~= "etltv" then return 0 end
+
+    local sub = string.lower(et.trap_Argv(1) or "")
+    local tag = et.trap_Argv(2) or ""
+    if not ETLTV_COMMANDS[sub] or et.trap_Argc() > 3 or (tag ~= "" and sub ~= "start") then
+        et.G_Print("usage: etltv start [tag] | stop | status | reset\n")
+        return 1
+    end
+    -- Runs through a shell, so nothing else may reach it
+    if tag ~= "" and not string.match(tag, "^[%w%._%-]+$") then
+        et.G_Print("etltv: tag may only contain A-Z a-z 0-9 . _ -\n")
+        return 1
+    end
+
+    local command = ETLUTIL_PATH .. " tv " .. sub
+    if tag ~= "" then command = command .. " " .. tag end
+    local pipe = io.popen(command .. " 2>&1")
+    if not pipe then
+        et.G_Print("etltv: could not run " .. ETLUTIL_PATH .. "\n")
+        return 1
+    end
+    local output = pipe:read("*a") or ""
+    pipe:close()
+    et.G_Print(output)  -- relayed back to the rcon caller
+    return 1
+end
+
 function et_ClientConnect(clientNum, firstTime, isBot)
     return connBan_clientConnect(clientNum, firstTime, isBot)
 end
@@ -508,6 +549,14 @@ function et_ClientCommand(clientNum, command)
     if pause_clientCommand(clientNum, cmd) == 1 then return 1 end
     if voteBan_clientCommand(clientNum, cmd) == 1 then return 1 end
     if saveLoad_clientCommand(clientNum, cmd) == 1 then return 1 end
+
+    return 0
+end
+
+function et_ConsoleCommand(command)
+    local cmd = string.lower(et.trap_Argv(0) or "")
+
+    if etltv_consoleCommand(cmd) == 1 then return 1 end
 
     return 0
 end
