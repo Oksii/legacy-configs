@@ -106,9 +106,11 @@ function gamelog.teamkill(killer_snap, victim_snap, weapon, victim_reinf)
         victim          = victim_snap  and victim_snap.guid,
         weapon          = weapon,
         killer_class    = killer_snap and killer_snap.class,
+        killer_pos      = utils.fmt_pos(killer_snap and killer_snap.pos),
         killer_stance   = stance_of(killer_snap),
         victim_class    = victim_snap  and victim_snap.class,
         victim_health   = victim_snap  and victim_snap.health,
+        victim_pos      = utils.fmt_pos(victim_snap  and victim_snap.pos),
         victim_stance   = stance_of(victim_snap),
         victim_reinf    = victim_reinf,
     })

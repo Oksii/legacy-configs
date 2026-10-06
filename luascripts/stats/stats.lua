@@ -53,6 +53,7 @@ local _spectators       = {}
 -- field at all. nil means unprobed; see read_kill_assists.
 local _assist_counts    = {}
 local _assists_ok       = nil
+local _slots            = {}
 
 local CON_CONNECTED     = 2
 local TEAM_SPECTATOR    = 3
@@ -234,6 +235,7 @@ function stats.store(maxClients)
                 -- after intermission and a player who left at the final gun
                 -- would otherwise be lost.
                 _assist_counts[guid] = assists
+                _slots[guid] = i
             end
         end
     end
@@ -382,6 +384,10 @@ function stats.save(round_start_time, round_end_time, round_start_unix, round_en
             player_stats[guid].assists = _assist_counts[guid]
         end
 
+        if _slots[guid] ~= nil then
+            player_stats[guid].slot = _slots[guid]
+        end
+
     end
 
     local gamelog_data = nil
@@ -470,6 +476,7 @@ function stats.reset()
     _weapon_stats  = {}
     _spectators    = {}
     _assist_counts = {}
+    _slots         = {}
 end
 
 return stats
