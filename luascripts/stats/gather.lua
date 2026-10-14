@@ -986,8 +986,9 @@ scan_players = function(match_data)
         end
     end
 
-    add_roster_team(match_data.alpha_team, TEAM_AXIS)
-    add_roster_team(match_data.beta_team,  TEAM_ALLIES)
+    local swapped = _match_extra and _match_extra.sides_swapped
+    add_roster_team(match_data.alpha_team, swapped and TEAM_ALLIES or TEAM_AXIS)
+    add_roster_team(match_data.beta_team,  swapped and TEAM_AXIS   or TEAM_ALLIES)
 
     for _, p in ipairs(utils.get_connected_players()) do
         local entry  = p.guid ~= "" and roster[p.guid] or nil
