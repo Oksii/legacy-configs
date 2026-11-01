@@ -1493,6 +1493,29 @@ Both must be available to the ETLegacy Lua runtime (present in `lualibs/`):
 
 ---
 
+## combinedfixes.lua: GUID check
+
+For LAN cups (`lan.etl.lol`); never meant for gathers. In warmup, each time the number of
+players on Axis plus Allies rises to one of `CF_GUID_CHECK_COUNTS`, the server tells gibhub the
+GUIDs of the players it has not told it about before. gibhub posts the ones it cannot tie to a
+Discord account to the organisers' Discord, so they can have the player upload their etkey on
+their profile or verify on the tournament page. Spectators, bots and blank GUIDs never count and
+are never sent. Nothing is said in game.
+
+The request is fire and forget: curl runs in the background and the reply is never read. Every
+GUID sent is recorded in `<fs_homepath>/legacy/combinedfixes_guidcheck.sent` and never sent again
+while that file lives.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CF_GUID_CHECK` | `false` | Turns the check on. Inert unless the URL and token are set too. |
+| `CF_GUID_CHECK_API_URL` | `""` | gibhub's `https://<host>/api/_internal/guid-check`. |
+| `CF_GUID_CHECK_API_TOKEN` | `""` | gibhub's `GIBHUB_SERVER__DISCORD_LOOKUP_TOKEN`. |
+| `CF_GUID_CHECK_COUNTS` | `6,12` | Team player counts that trigger a send, comma separated. |
+
+The server address in the post is `MAP_IP` and `MAP_PORT` when set, otherwise the `net_ip` and
+`net_port` cvars (`net_ip` is left out when it is `0.0.0.0`).
+
 ## File structure
 
 ```
