@@ -23,10 +23,10 @@ local GUID_BLOCKER_TARGETS  = {
 -- Adds a "techpause" command that pauses with a longer timeout than a regular pause
 -- match_timeoutlength is managed here rather than in the match config to prevent
 -- ETLegacy config validation from unloading the competitive config on cvar change
-local ENABLE_TECH_PAUSE  = false
+local ENABLE_TECH_PAUSE  = true
 local TECH_PAUSE_LENGTH  = 600
 local TECH_PAUSE_COUNT   = 1     -- techpauses allowed per team per half
-local PAUSE_LENGTH       = 240
+local PAUSE_LENGTH       = 120
 
 -- [TEAM LOCK]
 -- Locks teams on round start in stopwatch; re-locks after unpause
