@@ -1,5 +1,5 @@
 local modname = "combinedfixes"
-local version = "1.2"
+local version = "1.3"
 
 -- ============================================================
 -- CONFIGURATION
@@ -23,10 +23,10 @@ local GUID_BLOCKER_TARGETS  = {
 -- Adds a "techpause" command that pauses with a longer timeout than a regular pause
 -- match_timeoutlength is managed here rather than in the match config to prevent
 -- ETLegacy config validation from unloading the competitive config on cvar change
-local ENABLE_TECH_PAUSE  = true
+local ENABLE_TECH_PAUSE  = false
 local TECH_PAUSE_LENGTH  = 600
 local TECH_PAUSE_COUNT   = 1     -- techpauses allowed per team per half
-local PAUSE_LENGTH       = 120
+local PAUSE_LENGTH       = 240
 
 -- [TEAM LOCK]
 -- Locks teams on round start in stopwatch; re-locks after unpause
@@ -79,6 +79,17 @@ local ENABLE_ETLTV  = true
 local ETLUTIL_PATH  = "/legacy/server/etlutil"
 
 -- [LOGGING]
+-- [GUID CHECK]
+-- For LAN cups. In warmup, once the number of players on the teams rises to one of
+-- GUID_CHECK_COUNTS, tells gibhub the GUIDs it has not told it about before.
+-- gibhub posts those it does not recognise to the organisers' Discord, so they can
+-- have the player upload their etkey. Inert unless enabled with a URL and a token.
+-- Fire and forget: the request runs in the background and the reply is never read.
+local ENABLE_GUID_CHECK     = false
+local GUID_CHECK_API_URL    = ""
+local GUID_CHECK_API_TOKEN  = ""
+local GUID_CHECK_COUNTS     = "6,12"
+
 -- Leave empty to auto-detect: <fs_homepath>/legacy/combinedfixes.log
 -- local LOG_FILEPATH = "/legacy/homepath/legacy/stats/game_stats.log"
 local LOG_FILEPATH = ""
@@ -105,6 +116,10 @@ ENABLE_COMMAND_LOGGING  = env_bool("CF_COMMAND_LOGGING",    ENABLE_COMMAND_LOGGI
 COMMAND_LOG_VOTES       = env_bool("CF_COMMAND_LOG_VOTES",  COMMAND_LOG_VOTES)
 COMMAND_LOG_REF         = env_bool("CF_COMMAND_LOG_REF",    COMMAND_LOG_REF)
 ENABLE_ETLTV            = env_bool("CF_ETLTV",              ENABLE_ETLTV)
+ENABLE_GUID_CHECK       = env_bool("CF_GUID_CHECK",         ENABLE_GUID_CHECK)
+GUID_CHECK_API_URL      = os.getenv("CF_GUID_CHECK_API_URL")            or GUID_CHECK_API_URL
+GUID_CHECK_API_TOKEN    = os.getenv("CF_GUID_CHECK_API_TOKEN")          or GUID_CHECK_API_TOKEN
+GUID_CHECK_COUNTS       = os.getenv("CF_GUID_CHECK_COUNTS")             or GUID_CHECK_COUNTS
 SPAWN_INVUL_SECONDS     = tonumber(os.getenv("CF_SPAWN_INVUL_SECONDS")) or SPAWN_INVUL_SECONDS
 BAN_REASON              = os.getenv("CF_BAN_REASON")                    or BAN_REASON
 LOG_FILEPATH            = os.getenv("CF_LOG_FILEPATH")                  or LOG_FILEPATH
@@ -449,6 +464,164 @@ local function saveLoad_clientCommand(clientNum, cmd)
     return 0
 end
 
+-- ============================================================
+-- MODULE: GUID CHECK
+-- ============================================================
+
+local GUID_CHECK_POLL_MS   = 1000
+local GUID_CHECK_MAX_SEND  = 24   -- gibhub refuses more in one request
+local CON_CONNECTED        = 2
+local GS_WARMUP            = 2
+
+local _guidCheckSentPath   = nil  -- resolved in et_InitGame
+local _guidCheckSent       = {}   -- GUIDs gibhub was told about, loaded from the file
+local _guidCheckCounts     = {}   -- [n] = true, parsed from GUID_CHECK_COUNTS
+local _guidCheckLast       = 0    -- team players at the last poll
+local _guidCheckPollAt     = 0
+local _isBot               = {}   -- [clientNum] = true for a bot's slot
+
+local function guidCheck_active()
+    return ENABLE_GUID_CHECK and GUID_CHECK_API_URL ~= "" and GUID_CHECK_API_TOKEN ~= ""
+end
+
+local function shellQuote(str)
+    return "'" .. string.gsub(str, "'", "'\\''") .. "'"
+end
+
+-- A JSON string. Bytes outside ASCII become "?": names are not valid UTF-8.
+local function jsonString(str)
+    str = string.gsub(str, '[%c"\\\128-\255]', function(c)
+        if c == '"' then return '\\"' end
+        if c == "\\" then return "\\\\" end
+        return "?"
+    end)
+    return '"' .. str .. '"'
+end
+
+local function isBlankGuid(guid)
+    return guid == "" or guid == "NO_GUID" or guid == "UNKNOWN"
+end
+
+-- Real players on Axis or Allies, in client order, with a GUID worth reporting.
+local function guidCheck_teamPlayers()
+    local out = {}
+    local maxClients = tonumber(et.trap_Cvar_Get("sv_maxclients")) or 64
+    for i = 0, maxClients - 1 do
+        if et.gentity_get(i, "pers.connected") == CON_CONNECTED and not _isBot[i] then
+            local team = tonumber(et.gentity_get(i, "sess.sessionTeam"))
+            if team == TEAM_AXIS or team == TEAM_ALLIES then
+                local userinfo = et.trap_GetUserinfo(i)
+                local guid     = string.upper(et.Info_ValueForKey(userinfo, "cl_guid") or "")
+                if not isBlankGuid(guid) then
+                    out[#out + 1] = { guid = guid, name = et.Info_ValueForKey(userinfo, "name") or "" }
+                end
+            end
+        end
+    end
+    return out
+end
+
+-- host:port the server is reached at. Never looked up on the public internet,
+-- which would block the game.
+local function guidCheck_address()
+    local host = os.getenv("MAP_IP")
+    if not host or host == "" then
+        host = et.trap_Cvar_Get("net_ip") or ""
+        if host == "0.0.0.0" then host = "" end
+    end
+    if host == "" then return "" end
+    local port = os.getenv("MAP_PORT")
+    if not port or port == "" then port = et.trap_Cvar_Get("net_port") or "" end
+    if port == "" then return host end
+    return host .. ":" .. port
+end
+
+local function guidCheck_send(players)
+    local items = {}
+    for _, p in ipairs(players) do
+        items[#items + 1] = string.format('{"guid":%s,"name":%s}', jsonString(p.guid), jsonString(p.name))
+    end
+    local body = string.format('{"server":%s,"address":%s,"players":[%s]}',
+        jsonString(et.trap_Cvar_Get("sv_hostname") or ""), jsonString(guidCheck_address()), table.concat(items, ","))
+
+    local tmp = os.tmpname()
+    local f = io.open(tmp, "w")
+    if not f then
+        log("GUID check: could not write the request")
+        return false
+    end
+    f:write(body)
+    f:close()
+
+    local curl = string.format("curl --silent --output /dev/null --connect-timeout 2 --max-time 10 -X POST" ..
+        " -H 'Content-Type: application/json' -H %s --data-binary @%s %s",
+        shellQuote("Authorization: Bearer " .. GUID_CHECK_API_TOKEN), shellQuote(tmp), shellQuote(GUID_CHECK_API_URL))
+    -- A subshell in the background: the game does not wait, and the file goes when curl does.
+    os.execute(string.format("(%s ; rm -f %s) >/dev/null 2>&1 &", curl, shellQuote(tmp)))
+    return true
+end
+
+local function guidCheck_crossed(last, now)
+    for count in pairs(_guidCheckCounts) do
+        if last < count and count <= now then return true end
+    end
+    return false
+end
+
+local function guidCheck_runFrame(levelTime)
+    if not guidCheck_active() then return end
+    if levelTime - _guidCheckPollAt < GUID_CHECK_POLL_MS and levelTime >= _guidCheckPollAt then return end
+    _guidCheckPollAt = levelTime
+    -- Warmup only: a count reached at any other time sends nothing, its players
+    -- go with the next warmup's crossing.
+    if getGamestate() ~= GS_WARMUP then return end
+
+    local players = guidCheck_teamPlayers()
+    local last = _guidCheckLast
+    _guidCheckLast = #players
+    if not guidCheck_crossed(last, #players) then return end
+
+    local unsent = {}
+    for _, p in ipairs(players) do
+        if not _guidCheckSent[p.guid] and #unsent < GUID_CHECK_MAX_SEND then unsent[#unsent + 1] = p end
+    end
+    if #unsent == 0 then return end
+
+    -- Written before it is sent: a GUID is never sent twice, even if this fails.
+    local f = io.open(_guidCheckSentPath, "a")
+    if f then
+        for _, p in ipairs(unsent) do f:write(p.guid, "\n") end
+        f:close()
+    else
+        log("GUID check: could not record the GUIDs sent")
+    end
+    for _, p in ipairs(unsent) do _guidCheckSent[p.guid] = true end
+    if guidCheck_send(unsent) then
+        log(string.format("GUID check: sent %d player(s) at %d on the teams", #unsent, #players))
+    end
+end
+
+local function guidCheck_init()
+    _guidCheckLast, _guidCheckPollAt, _isBot = 0, 0, {}
+    _guidCheckCounts, _guidCheckSent = {}, {}
+    for item in string.gmatch(GUID_CHECK_COUNTS, "[^,]+") do
+        local n = tonumber(string.match(item, "^%s*(.-)%s*$"))
+        if n and n > 0 then _guidCheckCounts[n] = true end
+    end
+    if not guidCheck_active() then return end
+    -- The Lua VM restarts every map; the file lives as long as the box.
+    local homepath = et.trap_Cvar_Get("fs_homepath") or ""
+    _guidCheckSentPath = homepath .. "/legacy/combinedfixes_guidcheck.sent"
+    local f = io.open(_guidCheckSentPath, "r")
+    if f then
+        for line in f:lines() do
+            if line ~= "" then _guidCheckSent[line] = true end
+        end
+        f:close()
+    end
+    log("GUID check enabled, counts " .. GUID_CHECK_COUNTS)
+end
+
 function et_InitGame(levelTime, randomSeed, restart)
     et.RegisterModname(modname .. " " .. version)
     if LOG_FILEPATH and LOG_FILEPATH ~= "" then
@@ -464,6 +637,7 @@ function et_InitGame(levelTime, randomSeed, restart)
     techPauseTeam = nil
     spawnInvul_init()
     saveLoad_init()
+    guidCheck_init()
     log("Initialized")
 end
 
@@ -528,6 +702,7 @@ local function etltv_consoleCommand(cmd)
 end
 
 function et_ClientConnect(clientNum, firstTime, isBot)
+    _isBot[clientNum] = isBot == 1
     return connBan_clientConnect(clientNum, firstTime, isBot)
 end
 
@@ -568,4 +743,5 @@ end
 
 function et_RunFrame(levelTime)
     pause_runFrame(levelTime)
+    guidCheck_runFrame(levelTime)
 end
