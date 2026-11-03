@@ -148,12 +148,15 @@ end
 
 -- Returns array of { guid=string(upper), team=number, clientNum=number }
 -- for every connected player on teams 1 (axis) or 2 (allies).
--- Spectators (team 3+) are always excluded.
-function utils.get_connected_players(maxClients)
+-- Spectators (team 3+) are always excluded. With include_connecting, a client
+-- still loading the map (pers.connected 1) counts too: its team is already back
+-- from its session.
+function utils.get_connected_players(maxClients, include_connecting)
     maxClients = maxClients or (tonumber(et.trap_Cvar_Get("sv_maxclients")) or 24)
     local players = {}
     for i = 0, maxClients - 1 do
-        if et.gentity_get(i, "pers.connected") == 2 then
+        local connected = et.gentity_get(i, "pers.connected")
+        if connected == 2 or (include_connecting and connected == 1) then
             local team = tonumber(et.gentity_get(i, "sess.sessionTeam")) or 0
             if team == 1 or team == 2 then
                 local userinfo = et.trap_GetUserinfo(i)

@@ -85,7 +85,9 @@ local function check_continuity()
     for g in pairs(_alpha_guids) do stored[g] = true end
     for g in pairs(_beta_guids)  do stored[g] = true end
 
-    local players = utils.get_connected_players()
+    -- Players still loading the map count: a round can start before they are
+    -- in, and the match they are part of must not split under them.
+    local players = utils.get_connected_players(nil, true)
     local _, ratio = utils.guid_overlap(stored, players)
     return ratio >= CONTINUITY_THRESHOLD, ratio
 end
@@ -95,14 +97,9 @@ function ng_scores.on_round_start()
     if not _auto_scores then return end
 
     if _match_id ~= nil then
-        local last = scores_ref and scores_ref.get_last_round()
-        if last and last.round_num == 1 then
-            if scores_ref then scores_ref.activate_ng_mode(_match_id, _alpha_name, _beta_name, _alpha_guids) end
-            _is_active = true
-            if log then log.write(string.format("ng: R2 start — match continued — match_id=%s", _match_id)) end
-            return
-        end
-
+        -- Round 2 gets the same roster check as any round: a match can end on a
+        -- first round (a fullhold that clinches it on a later map), and the next
+        -- match's opening round on the box must not be taken for its round 2.
         local same, ratio = check_continuity()
         if log then
             log.write(string.format("ng: continuity check — ratio=%.2f threshold=%.2f same=%s",
